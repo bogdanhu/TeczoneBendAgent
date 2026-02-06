@@ -51,4 +51,6 @@ config.local.json
 *.geo
 *.dxf
 *.dwg
+*.pdf
+*.zip
 

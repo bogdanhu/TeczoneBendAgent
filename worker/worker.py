@@ -11,7 +11,7 @@ from pathlib import Path
 from overlay import Overlay
 from screenshot import Screenshotter
 from teczone_actions import TecZoneSession, NeedsHelpError
-from ui_utils import get_active_window_title
+from ui_utils import dump_window_titles, get_active_window_title
 from xometry_parser import load_xometry_map
 
 DEFAULT_POLL_SECONDS = 2
@@ -60,11 +60,17 @@ def release_job(marker_path, status):
 
 def write_needs_help(path, step, found):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
+    titles = dump_window_titles()
     with open(path, "w", encoding="utf-8") as f:
         f.write("NEEDS_HELP\n")
         f.write(f"active_window: {get_active_window_title()}\n")
         f.write(f"step: {step}\n")
         f.write(f"found: {found}\n")
+        f.write("window_titles:\n")
+        for t in titles:
+            f.write(f"- {t}\n")
+    windows_json_path = str(Path(path).parent / "windows.json")
+    write_json(windows_json_path, {"windows": titles})
 
 
 def process_job(job_path):
@@ -89,6 +95,8 @@ def process_job(job_path):
         try:
             xometry_map = load_xometry_map(job["xometryJson"], logger)
         except Exception as e:
+            if settings.get("dryRun"):
+                raise NeedsHelpError(f"Failed to parse xometry json: {e}")
             logger.warning("Failed to parse xometry json: %s", e)
 
     overlay = Overlay(f"WORKER RUNNING: {job_id} / START")
@@ -117,6 +125,15 @@ def process_job(job_path):
     try:
         tz = TecZoneSession(logger, screenshotter)
         tz.connect()
+
+        if settings.get("dryRun"):
+            screenshotter.snap("dryrun_connected")
+            logger.info("Dry run completed: connected to TecZone and parsed xometry json")
+            result["status"] = "DONE"
+            result_path = str(Path(project_root) / "WORK" / "logs" / f"{job_id}.result.json")
+            write_json(result_path, result)
+            write_json(str(Path(project_root) / "WORK" / "logs" / "result.json"), result)
+            return result_path, "DONE"
 
         for part in job.get("inputFiles", []):
             part_id = part.get("partId")

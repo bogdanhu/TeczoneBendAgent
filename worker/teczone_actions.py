@@ -34,6 +34,16 @@ class TecZoneSession:
             self.app = self.main.app
             self.logger.info("Connected to TecZone window: %s", self.main.window_text())
         except Exception as e:
+            exe = os.getenv("TECZONE_EXE")
+            if exe and os.path.exists(exe):
+                try:
+                    self.logger.info("TecZone window not found, launching: %s", exe)
+                    self.app = Application(backend="uia").start(exe)
+                    self.main = wait_for_window(self.main_title_re, timeout=timeout)
+                    self.logger.info("Connected to TecZone window after launch: %s", self.main.window_text())
+                    return
+                except Exception as e2:
+                    raise NeedsHelpError(f"TecZone launch failed: {e2}")
             raise NeedsHelpError(f"TecZone main window not found: {e}")
 
     def open_file(self, path):

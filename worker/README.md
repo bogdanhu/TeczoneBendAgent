@@ -24,6 +24,42 @@ pip install -r requirements.txt
 python worker.py --jobs-dir X:\\33259_TEST_OC_20260206-210632\\WORK\\jobs
 ```
 
+## Example job (realistic paths)
+```json
+{
+  "jobId": "33259_J-1797130-318293_teczone",
+  "projectRoot": "X:\\33259_TEST_OC_20260206-210632",
+  "docDir": "X:\\33259_TEST_OC_20260206-210632\\DOC",
+  "xometryRef": "J-1797130-318293",
+  "xometryJson": "X:\\33259_TEST_OC_20260206-210632\\DOC\\J-1797130-318293.xometry.json",
+  "inputFiles": [
+    {
+      "path": "X:\\33259_TEST_OC_20260206-210632\\DOC\\part735256\\Main.STEP",
+      "partId": 735256,
+      "partName": "part735256_Main"
+    }
+  ],
+  "settings": {
+    "exportDir": "X:\\33259_TEST_OC_20260206-210632\\WORK\\out\\flat",
+    "exportNameTemplate": "<partName>.geo",
+    "screenshotsEverySeconds": 10,
+    "dryRun": false
+  }
+}
+```
+
+## Quick test today (no UI automation yet)
+1. Set `dryRun` to `true` in your job.
+2. Run:
+```powershell
+.\.venv\Scripts\Activate.ps1
+python worker.py --jobs-dir X:\\33259_TEST_OC_20260206-210632\\WORK\\jobs
+```
+3. The worker will:
+- Find the TecZone window (or launch it if `TECZONE_EXE` is set).
+- Parse the `xometry.json` (fails to NEEDS_HELP if parsing fails).
+- Write a screenshot and logs.
+
 ## Notes
 - If a control/menu is not found, the worker writes `NEEDS_HELP` and stops. Check screenshots in `WORK\screenshots\<jobId>` and the log at `WORK\logs\<jobId>.log`.
 - `result.json` is written to `WORK\logs\<jobId>.result.json`.
