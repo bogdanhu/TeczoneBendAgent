@@ -1,0 +1,43 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyd
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# --- Logs / runtime artifacts ---
+logs/
+log/
+*.log
+screenshots/
+screens/
+state/
+tmp/
+temp/
+*.tmp
+*.bak
+
+# --- Job queue / project folders (X: share outputs) ---
+WORK/
+work/
+out/
+output/
+results/
+
+# --- OS / IDE ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# --- Secrets / configs ---
+.env
+*.env
+config.json
+config.local.json
+*.secrets.*
