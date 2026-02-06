@@ -1,0 +1,3 @@
+﻿pywinauto>=0.6.8
+mss>=9.0.1
+Pillow>=10.0.0
