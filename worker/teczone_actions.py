@@ -9,6 +9,7 @@ from pathlib import Path
 
 from pywinauto import Desktop
 from pywinauto.application import Application
+from pywinauto.keyboard import send_keys
 
 from ui_utils import (
     click_menu_item_anywhere,
@@ -517,6 +518,19 @@ class TecZoneSession:
         joined = "->".join(menu_path_items)
         try:
             self.main.menu_select(joined)
+            return
+        except Exception:
+            pass
+
+        # Keyboard fallback requested by operator:
+        # Alt+F -> release Alt -> E -> 2 -> Enter
+        self.main.set_focus()
+        try:
+            send_keys("%f")
+            time.sleep(0.12)
+            send_keys("{VK_MENU up}")
+            time.sleep(0.08)
+            send_keys("e2{ENTER}")
             return
         except Exception:
             pass

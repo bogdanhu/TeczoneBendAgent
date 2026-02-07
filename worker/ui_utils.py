@@ -219,80 +219,70 @@ def debug_open_dialog_search(parent=None):
 
 def set_file_name(dialog, value):
     value = normalize_windows_path(value)
-    targets = []
+    candidates = []
 
-    by_auto_id = find_child(dialog, auto_id="1148")
-    if by_auto_id:
-        targets.append(by_auto_id)
-    by_auto_id_combo = find_child(dialog, control_type="ComboBox", auto_id="1148")
-    if by_auto_id_combo:
-        targets.append(by_auto_id_combo)
-    by_auto_id_edit = find_child(dialog, control_type="Edit", auto_id="1148")
-    if by_auto_id_edit:
-        targets.append(by_auto_id_edit)
+    # Primary path for modern common dialogs.
+    combo_1148 = find_child(dialog, control_type="ComboBox", auto_id="1148")
+    if combo_1148:
+        try:
+            combo_edit = combo_1148.child_window(control_type="Edit")
+            if combo_edit.exists(timeout=0.2):
+                candidates.append(combo_edit)
+        except Exception:
+            pass
+        candidates.append(combo_1148)
 
+    edit_1148 = find_child(dialog, control_type="Edit", auto_id="1148")
+    if edit_1148:
+        candidates.append(edit_1148)
+
+    generic_1148 = find_child(dialog, auto_id="1148")
+    if generic_1148:
+        candidates.append(generic_1148)
+
+    # Secondary path: infer from "File name:" label row.
     label = find_child(dialog, control_type="Text", title_re=FILE_NAME_LABEL_RE)
     if label:
         try:
             parent = label.parent()
             if parent:
-                targets.append(parent)
+                for edit in parent.descendants(control_type="Edit"):
+                    candidates.append(edit)
         except Exception:
             pass
 
-    combo_by_title = find_child(dialog, control_type="ComboBox", title_re=FILE_NAME_LABEL_RE)
-    if combo_by_title:
-        targets.append(combo_by_title)
-
-    try:
-        edits = dialog.descendants(control_type="Edit")
-    except Exception:
-        edits = []
-    if edits:
-        targets.append(edits[0])
-
+    # Deduplicate and remove obvious non-target edits (search/rename inline fields).
     deduped = []
     seen = set()
-    for ctrl in targets:
-        if ctrl is None:
+    for candidate in candidates:
+        if candidate is None:
             continue
-        key = None
         try:
-            key = ctrl.element_info.runtime_id
+            key = tuple(candidate.element_info.runtime_id)
         except Exception:
-            key = id(ctrl)
+            key = id(candidate)
         if key in seen:
             continue
         seen.add(key)
-        deduped.append(ctrl)
+        try:
+            title = (candidate.window_text() or "").strip().lower()
+        except Exception:
+            title = ""
+        if "search" in title:
+            continue
+        deduped.append(candidate)
 
     last_error = None
-    for target in deduped:
-        candidates = [target]
+    for candidate in deduped:
         try:
-            if target.element_info.control_type == "ComboBox":
-                edit_child = target.child_window(control_type="Edit")
-                if edit_child.exists(timeout=0.2):
-                    candidates.insert(0, edit_child)
-        except Exception:
-            pass
-        try:
-            children = target.descendants(control_type="Edit")
-            if children:
-                candidates.extend(children[:1])
-        except Exception:
-            pass
+            candidate.set_focus()
+            candidate.set_edit_text(value)
+            return candidate
+        except Exception as e:
+            last_error = e
+            continue
 
-        for candidate in candidates:
-            try:
-                candidate.set_focus()
-                candidate.set_edit_text(value)
-                return candidate
-            except Exception as e:
-                last_error = e
-                continue
-
-    raise RuntimeError(f"Open dialog file name edit not found/settable: {last_error}")
+    raise RuntimeError(f"File name edit not found/settable (strict mode): {last_error}")
 
 
 def press_open(dialog):
