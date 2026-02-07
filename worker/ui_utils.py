@@ -6,7 +6,30 @@ from pywinauto import Desktop
 OPEN_TITLE_RE = r"(?i)\bopen\b|deschide|oeffnen|offnen|ouvrir"
 SAVE_TITLE_RE = r"(?i)\bsave\b|\bexport\b|salveaza|speichern|enregistrer"
 FILE_NAME_LABEL_RE = r"(?i)file\s*name|nume\s*fisier|nume\s*fi.sier|dateiname"
-UNEXPECTED_DIALOG_KEYWORDS = ["warning", "confirm", "overwrite", "error", "attention", "question"]
+UNEXPECTED_DIALOG_KEYWORDS = [
+    "warning",
+    "confirm",
+    "overwrite",
+    "error",
+    "attention",
+    "question",
+    "invalid",
+    "not valid",
+    "cannot",
+    "failed",
+    "does not exist",
+]
+
+
+def normalize_windows_path(value):
+    text = str(value or "").strip().strip('"')
+    text = text.replace("/", "\\")
+    if text.startswith("\\\\"):
+        prefix = "\\\\"
+        rest = text[2:]
+        rest = re.sub(r"\\{2,}", r"\\", rest)
+        return prefix + rest
+    return re.sub(r"\\{2,}", r"\\", text)
 
 
 def wait_for_window(title_re, timeout=10, backend="uia"):
@@ -102,65 +125,50 @@ def _open_search_roots(parent=None):
     return roots
 
 
+def _is_common_file_dialog(dlg):
+    try:
+        if (dlg.element_info.control_type or "") != "Window":
+            return False
+    except Exception:
+        return False
+
+    try:
+        class_name = (dlg.element_info.class_name or "").strip()
+    except Exception:
+        class_name = ""
+
+    has_file_name = find_child(dlg, auto_id="1148") is not None
+    has_primary = find_child(dlg, control_type="Button", auto_id="1") is not None
+    has_cancel = find_child(dlg, control_type="Button", auto_id="2") is not None
+
+    if class_name == "#32770":
+        return has_file_name and has_primary
+    return has_file_name and has_primary and has_cancel
+
+
 def find_open_dialog(parent=None, title_re=OPEN_TITLE_RE):
     for dlg in _open_search_roots(parent):
+        if not _is_common_file_dialog(dlg):
+            continue
         try:
             title = (dlg.window_text() or "").strip()
         except Exception:
             title = ""
-
-        edit = find_child(dlg, control_type="Edit", auto_id="1148")
-        if not edit:
-            edit = find_child(dlg, control_type="Edit", title_re=FILE_NAME_LABEL_RE)
-        if not edit:
-            try:
-                edits = dlg.descendants(control_type="Edit")
-            except Exception:
-                edits = []
-            edit = edits[0] if edits else None
-        if not edit:
-            continue
-
-        open_btn = find_child(dlg, control_type="Button", auto_id="1")
-        if not open_btn:
-            open_btn = find_child(dlg, control_type="Button", title_re=OPEN_TITLE_RE)
-        if not open_btn:
-            continue
-
-        if title and not re.search(title_re, title):
-            # Fallback accepted by structure (file name + open button).
+        if title and re.search(title_re, title):
             return dlg
-        return dlg
     return None
 
 
 def find_save_dialog(parent=None, title_re=SAVE_TITLE_RE):
     for dlg in _open_search_roots(parent):
+        if not _is_common_file_dialog(dlg):
+            continue
         try:
             title = (dlg.window_text() or "").strip()
         except Exception:
             title = ""
-        if title and not re.search(title_re, title):
-            continue
-
-        edit = find_child(dlg, control_type="Edit", auto_id="1148")
-        if not edit:
-            edit = find_child(dlg, control_type="Edit", title_re=FILE_NAME_LABEL_RE)
-        if not edit:
-            try:
-                edits = dlg.descendants(control_type="Edit")
-            except Exception:
-                edits = []
-            edit = edits[0] if edits else None
-        if not edit:
-            continue
-
-        save_btn = find_child(dlg, control_type="Button", auto_id="1")
-        if not save_btn:
-            save_btn = find_child(dlg, control_type="Button", title_re=r"(?i)save|export|ok")
-        if not save_btn:
-            continue
-        return dlg
+        if title and re.search(title_re, title):
+            return dlg
     return None
 
 
@@ -180,35 +188,81 @@ def debug_open_dialog_search(parent=None):
 
 
 def set_file_name(dialog, value):
-    edit = find_child(dialog, control_type="Edit", auto_id="1148")
-    if not edit:
-        label = find_child(dialog, control_type="Text", title_re=FILE_NAME_LABEL_RE)
-        if not label:
-            label = find_child(dialog, control_type="ComboBox", title_re=FILE_NAME_LABEL_RE)
-        if label:
-            try:
-                edit = label.parent().child_window(control_type="Edit")
-                if not edit.exists():
-                    edit = None
-            except Exception:
-                edit = None
-    if not edit:
+    value = normalize_windows_path(value)
+    targets = []
+
+    by_auto_id = find_child(dialog, auto_id="1148")
+    if by_auto_id:
+        targets.append(by_auto_id)
+    by_auto_id_combo = find_child(dialog, control_type="ComboBox", auto_id="1148")
+    if by_auto_id_combo:
+        targets.append(by_auto_id_combo)
+    by_auto_id_edit = find_child(dialog, control_type="Edit", auto_id="1148")
+    if by_auto_id_edit:
+        targets.append(by_auto_id_edit)
+
+    label = find_child(dialog, control_type="Text", title_re=FILE_NAME_LABEL_RE)
+    if label:
+        try:
+            parent = label.parent()
+            if parent:
+                targets.append(parent)
+        except Exception:
+            pass
+
+    combo_by_title = find_child(dialog, control_type="ComboBox", title_re=FILE_NAME_LABEL_RE)
+    if combo_by_title:
+        targets.append(combo_by_title)
+
+    try:
         edits = dialog.descendants(control_type="Edit")
-        edit = edits[0] if edits else None
-    if not edit:
-        raise RuntimeError("Open dialog file name edit not found")
-    edit.set_focus()
-    try:
-        edit.set_edit_text(value)
     except Exception:
-        pass
-    # Force the exact path through keystrokes as fallback for Win11 common dialog.
-    try:
-        edit.type_keys("^a{BACKSPACE}", set_foreground=True)
-        edit.type_keys(value, with_spaces=True, set_foreground=True)
-    except Exception:
-        pass
-    return edit
+        edits = []
+    if edits:
+        targets.append(edits[0])
+
+    deduped = []
+    seen = set()
+    for ctrl in targets:
+        if ctrl is None:
+            continue
+        key = None
+        try:
+            key = ctrl.element_info.runtime_id
+        except Exception:
+            key = id(ctrl)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(ctrl)
+
+    last_error = None
+    for target in deduped:
+        candidates = [target]
+        try:
+            if target.element_info.control_type == "ComboBox":
+                edit_child = target.child_window(control_type="Edit")
+                if edit_child.exists(timeout=0.2):
+                    candidates.insert(0, edit_child)
+        except Exception:
+            pass
+        try:
+            children = target.descendants(control_type="Edit")
+            if children:
+                candidates.extend(children[:1])
+        except Exception:
+            pass
+
+        for candidate in candidates:
+            try:
+                candidate.set_focus()
+                candidate.set_edit_text(value)
+                return candidate
+            except Exception as e:
+                last_error = e
+                continue
+
+    raise RuntimeError(f"Open dialog file name edit not found/settable: {last_error}")
 
 
 def press_open(dialog):
@@ -297,17 +351,40 @@ def click_menu_item_anywhere(label, timeout=4):
     return False
 
 
-def find_unexpected_dialog():
+def find_unexpected_dialog(process_id=None):
     desktop = Desktop(backend="uia")
     for dlg in desktop.windows():
+        try:
+            if process_id is not None and int(dlg.element_info.process_id) != int(process_id):
+                continue
+        except Exception:
+            if process_id is not None:
+                continue
         title = (dlg.window_text() or "").strip()
         if not title:
             continue
+
+        # Ignore regular Open/Save dialogs that are part of normal flow.
+        try:
+            if find_child(dlg, auto_id="1148") and (
+                re.search(OPEN_TITLE_RE, title) or re.search(SAVE_TITLE_RE, title)
+            ):
+                continue
+        except Exception:
+            pass
+
         title_l = title.lower()
-        if "open" in title_l or "save" in title_l or "export" in title_l:
-            continue
-        if any(k in title_l for k in UNEXPECTED_DIALOG_KEYWORDS):
-            return title
+        text_blobs = [title_l]
+        try:
+            for txt in dlg.descendants(control_type="Text"):
+                t = (txt.window_text() or "").strip().lower()
+                if t:
+                    text_blobs.append(t)
+        except Exception:
+            pass
+        whole = " | ".join(text_blobs)
+        if any(k in whole for k in UNEXPECTED_DIALOG_KEYWORDS):
+            return f"{title}: {whole[:300]}"
     return None
 
 

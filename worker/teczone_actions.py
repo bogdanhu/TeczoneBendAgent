@@ -18,11 +18,12 @@ from ui_utils import (
     find_control,
     find_unexpected_dialog,
     handle_possible_dialogs,
-    open_dialog_present,
+    normalize_windows_path,
     press_open,
     press_save,
     save_dialog_present,
     set_file_name,
+    wait_window_closed,
     wait_for_open_dialog,
     wait_for_save_dialog,
 )
@@ -79,6 +80,12 @@ class TecZoneSession:
         self.material_menu_titles = ["Material", "Material..."]
         self.material_dialog_title_re = os.getenv("TECZONE_MATERIAL_DIALOG_RE", r".*Material.*")
         self.workflow = self._load_workflow()
+
+    def _main_process_id(self):
+        try:
+            return int(self.main.element_info.process_id)
+        except Exception:
+            return None
 
     def _load_workflow(self):
         default_path = Path(__file__).resolve().parent / "teczone_workflow.json"
@@ -288,6 +295,7 @@ class TecZoneSession:
             raise NeedsHelpError(f"TecZone main window wrapper failed: {e}")
 
     def open_file(self, path):
+        path = normalize_windows_path(path)
         if not Path(path).exists():
             raise NeedsHelpError(f"Input file not found: {path}")
         if Path(path).suffix.lower() not in [".stp", ".step"]:
@@ -333,12 +341,14 @@ class TecZoneSession:
                 f"found_controls={controls}; error={e}"
             )
 
-        deadline = time.time() + 90
+        timeout_s = 90
+        deadline = time.time() + timeout_s
+        main_pid = self._main_process_id()
         while time.time() < deadline:
-            unexpected = find_unexpected_dialog()
+            unexpected = find_unexpected_dialog(process_id=main_pid)
             if unexpected:
                 raise NeedsHelpError(f"Unexpected dialog while opening file: {unexpected}")
-            if not open_dialog_present(parent=self.main):
+            if wait_window_closed(dialog, timeout=0.2):
                 return
             time.sleep(0.3)
 
@@ -400,7 +410,7 @@ class TecZoneSession:
         else:
             dialog.type_keys("{ENTER}")
 
-        unexpected = find_unexpected_dialog()
+        unexpected = find_unexpected_dialog(process_id=self._main_process_id())
         if unexpected:
             raise NeedsHelpError(f"Unexpected dialog after setting material: {unexpected}")
 
@@ -428,8 +438,9 @@ class TecZoneSession:
             self.screenshotter.snap("enter_bend")
 
         deadline = time.time() + float(self.workflow.get("timeouts", {}).get("enterBendSeconds", 120))
+        main_pid = self._main_process_id()
         while time.time() < deadline:
-            unexpected = find_unexpected_dialog()
+            unexpected = find_unexpected_dialog(process_id=main_pid)
             if unexpected:
                 raise NeedsHelpError(f"Unexpected dialog while entering bend mode: {unexpected}")
             # No reliable public indicator for bend state in current build; continue after short settle.
@@ -467,6 +478,7 @@ class TecZoneSession:
             )
 
     def export_geo(self, export_path):
+        export_path = normalize_windows_path(export_path)
         self.main.set_focus()
         self._enter_bend_mode_if_needed()
 
@@ -506,8 +518,9 @@ class TecZoneSession:
             )
 
         deadline = time.time() + float(self.workflow.get("timeouts", {}).get("exportCompleteSeconds", 30))
+        main_pid = self._main_process_id()
         while time.time() < deadline:
-            unexpected = find_unexpected_dialog()
+            unexpected = find_unexpected_dialog(process_id=main_pid)
             if unexpected:
                 if self.screenshotter:
                     self.screenshotter.snap("export_failed")
