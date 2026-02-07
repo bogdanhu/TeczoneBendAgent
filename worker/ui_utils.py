@@ -118,19 +118,43 @@ def describe_controls(parent, limit=40):
     return items
 
 
-def _open_search_roots(parent=None):
+def _window_pid(win):
+    try:
+        return int(win.element_info.process_id)
+    except Exception:
+        return None
+
+
+def _open_search_roots(parent=None, process_id=None, include_descendants=False):
     roots = []
     if parent is not None:
         roots.append(parent)
-        try:
-            roots.extend(parent.descendants(control_type="Window"))
-        except Exception:
-            pass
+        if include_descendants:
+            try:
+                roots.extend(parent.descendants(control_type="Window"))
+            except Exception:
+                pass
     try:
         roots.extend(Desktop(backend="uia").windows())
     except Exception:
         pass
-    return roots
+
+    out = []
+    seen = set()
+    for w in roots:
+        if process_id is not None:
+            pid = _window_pid(w)
+            if pid is None or int(pid) != int(process_id):
+                continue
+        try:
+            key = tuple(w.element_info.runtime_id)
+        except Exception:
+            key = id(w)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(w)
+    return out
 
 
 def _is_common_file_dialog(dlg):
@@ -178,8 +202,9 @@ def _is_common_file_dialog(dlg):
     return has_file_name and has_primary and has_cancel
 
 
-def find_open_dialog(parent=None, title_re=OPEN_TITLE_RE):
-    for dlg in _open_search_roots(parent):
+def find_open_dialog(parent=None, title_re=OPEN_TITLE_RE, process_id=None):
+    roots = _open_search_roots(parent, process_id=process_id, include_descendants=False)
+    for dlg in roots:
         if not _is_common_file_dialog(dlg):
             continue
         try:
@@ -188,11 +213,20 @@ def find_open_dialog(parent=None, title_re=OPEN_TITLE_RE):
             title = ""
         if title and re.search(title_re, title):
             return dlg
+
+    # Fallback by structure when title text is not exposed yet.
+    for dlg in roots:
+        if not _is_common_file_dialog(dlg):
+            continue
+        open_btn = find_child(dlg, control_type="Button", title_re=OPEN_TITLE_RE)
+        if open_btn:
+            return dlg
     return None
 
 
-def find_save_dialog(parent=None, title_re=SAVE_TITLE_RE):
-    for dlg in _open_search_roots(parent):
+def find_save_dialog(parent=None, title_re=SAVE_TITLE_RE, process_id=None):
+    roots = _open_search_roots(parent, process_id=process_id, include_descendants=False)
+    for dlg in roots:
         if not _is_common_file_dialog(dlg):
             continue
         try:
@@ -210,9 +244,9 @@ def find_save_dialog(parent=None, title_re=SAVE_TITLE_RE):
     return None
 
 
-def debug_open_dialog_search(parent=None):
+def debug_open_dialog_search(parent=None, process_id=None):
     found_windows = []
-    for dlg in _open_search_roots(parent):
+    for dlg in _open_search_roots(parent, process_id=process_id, include_descendants=True):
         try:
             title = (dlg.window_text() or "").strip()
         except Exception:
@@ -280,12 +314,35 @@ def set_file_name(dialog, value):
             continue
         deduped.append(candidate)
 
+    def resolve_edit(ctrl):
+        try:
+            ctype = ctrl.element_info.control_type
+        except Exception:
+            ctype = ""
+        if ctype == "Edit":
+            return ctrl
+        if ctype == "ComboBox":
+            try:
+                child = ctrl.child_window(control_type="Edit")
+                if child.exists(timeout=0.2):
+                    return child
+            except Exception:
+                pass
+        try:
+            edits = ctrl.descendants(control_type="Edit")
+        except Exception:
+            edits = []
+        return edits[0] if edits else None
+
     last_error = None
     for candidate in deduped:
+        edit_ctrl = resolve_edit(candidate)
+        if not edit_ctrl:
+            continue
         try:
-            candidate.set_focus()
-            candidate.set_edit_text(value)
-            return candidate
+            edit_ctrl.set_focus()
+            edit_ctrl.set_edit_text(value)
+            return edit_ctrl
         except Exception as e:
             last_error = e
             continue
@@ -391,32 +448,32 @@ def wait_window_closed(window, timeout=90):
     return False
 
 
-def wait_for_open_dialog(timeout=5, parent=None):
+def wait_for_open_dialog(timeout=5, parent=None, process_id=None, poll_interval=0.08):
     deadline = time.time() + timeout
     while time.time() < deadline:
-        dlg = find_open_dialog(parent=parent)
+        dlg = find_open_dialog(parent=parent, process_id=process_id)
         if dlg:
             return dlg
-        time.sleep(0.25)
+        time.sleep(poll_interval)
     raise RuntimeError("Open file dialog not found")
 
 
-def wait_for_save_dialog(timeout=20, parent=None):
+def wait_for_save_dialog(timeout=20, parent=None, process_id=None, poll_interval=0.08):
     deadline = time.time() + timeout
     while time.time() < deadline:
-        dlg = find_save_dialog(parent=parent)
+        dlg = find_save_dialog(parent=parent, process_id=process_id)
         if dlg:
             return dlg
-        time.sleep(0.25)
+        time.sleep(poll_interval)
     raise RuntimeError("Save/Export dialog not found")
 
 
-def open_dialog_present(parent=None):
-    return find_open_dialog(parent=parent) is not None
+def open_dialog_present(parent=None, process_id=None):
+    return find_open_dialog(parent=parent, process_id=process_id) is not None
 
 
-def save_dialog_present(parent=None):
-    return find_save_dialog(parent=parent) is not None
+def save_dialog_present(parent=None, process_id=None):
+    return find_save_dialog(parent=parent, process_id=process_id) is not None
 
 
 def press_save(dialog):

@@ -307,10 +307,20 @@ class TecZoneSession:
             raise NeedsHelpError(f"Unsupported input extension: {path}")
 
         self.main.set_focus()
-        self.main.type_keys("^o")
+        main_pid = self._main_process_id()
+        try:
+            send_keys("^o")
+        except Exception:
+            self.main.type_keys("^o", set_foreground=True)
 
         try:
-            dialog = wait_for_open_dialog(timeout=5, parent=self.main)
+            # Fast path: Open dialog usually appears quickly; poll at high frequency.
+            dialog = wait_for_open_dialog(
+                timeout=1.4,
+                parent=self.main,
+                process_id=main_pid,
+                poll_interval=0.06,
+            )
         except Exception as e:
             opened = False
             for menu_path in ["File->Open", "File->Open..."]:
@@ -321,15 +331,20 @@ class TecZoneSession:
                 except Exception:
                     continue
             if not opened:
-                dbg = debug_open_dialog_search(self.main)
+                dbg = debug_open_dialog_search(self.main, process_id=main_pid)
                 raise NeedsHelpError(
                     f"Open dialog not found and menu fallback failed: {e}; "
                     f"searched={dbg['searched']}; found_windows={dbg['found_windows']}"
                 )
             try:
-                dialog = wait_for_open_dialog(timeout=5, parent=self.main)
+                dialog = wait_for_open_dialog(
+                    timeout=3.0,
+                    parent=self.main,
+                    process_id=main_pid,
+                    poll_interval=0.06,
+                )
             except Exception as e2:
-                dbg = debug_open_dialog_search(self.main)
+                dbg = debug_open_dialog_search(self.main, process_id=main_pid)
                 raise NeedsHelpError(
                     f"Open dialog not found: {e2}; "
                     f"searched={dbg['searched']}; found_windows={dbg['found_windows']}"
@@ -348,7 +363,6 @@ class TecZoneSession:
 
         timeout_s = 90
         deadline = time.time() + timeout_s
-        main_pid = self._main_process_id()
         while time.time() < deadline:
             unexpected = find_unexpected_dialog(process_id=main_pid)
             if unexpected:
@@ -357,7 +371,7 @@ class TecZoneSession:
                 return
             time.sleep(0.3)
 
-        dbg = debug_open_dialog_search(self.main)
+        dbg = debug_open_dialog_search(self.main, process_id=main_pid)
         raise NeedsHelpError(
             "Open dialog did not close within 90 seconds; "
             f"searched={dbg['searched']}; found_windows={dbg['found_windows']}"
@@ -574,8 +588,14 @@ class TecZoneSession:
             raise NeedsHelpError(f"Export menu open failed: {e}")
 
         save_timeout = float(self.workflow.get("timeouts", {}).get("saveAsSeconds", 20))
+        main_pid = self._main_process_id()
         try:
-            dialog = wait_for_save_dialog(timeout=save_timeout, parent=self.main)
+            dialog = wait_for_save_dialog(
+                timeout=save_timeout,
+                parent=self.main,
+                process_id=main_pid,
+                poll_interval=0.06,
+            )
             if self.screenshotter:
                 self.screenshotter.snap("saveas_dialog")
         except Exception as e:
@@ -594,6 +614,12 @@ class TecZoneSession:
                 time.sleep(0.2)
 
             file_edit = set_file_name(dialog, export_path)
+            # Requested flow: move focus with TAB after typing file name.
+            try:
+                dialog.type_keys("{TAB}", set_foreground=True)
+            except Exception:
+                pass
+
             typed = ""
             try:
                 typed = (file_edit.window_text() or "").strip()
@@ -601,8 +627,10 @@ class TecZoneSession:
                 typed = ""
             expected_name = Path(export_path).name.lower()
             if typed and expected_name not in typed.lower():
-                raise RuntimeError(
-                    f"Save As file name mismatch after typing: expected~{expected_name}; got={typed}"
+                self.logger.warning(
+                    "Save As file name mismatch after typing: expected~%s; got=%s",
+                    expected_name,
+                    typed,
                 )
 
             if not ensure_dialog_focus(dialog, timeout=1.8):
@@ -612,7 +640,34 @@ class TecZoneSession:
                 except Exception:
                     pass
 
-            press_save(dialog)
+            # Requested sequence: ALT+S for save action.
+            try:
+                send_keys("%s")
+                time.sleep(0.08)
+                send_keys("{VK_MENU up}")
+            except Exception:
+                press_save(dialog)
+
+            # Requested overwrite path: confirm with Y if overwrite dialog appears.
+            deadline_y = time.time() + 2.0
+            while time.time() < deadline_y:
+                overwrite_dlg = find_overwrite_dialog(process_id=main_pid)
+                if not overwrite_dlg:
+                    time.sleep(0.15)
+                    continue
+                if self.screenshotter:
+                    self.screenshotter.snap("overwrite_prompt")
+                try:
+                    send_keys("y")
+                    time.sleep(0.25)
+                except Exception:
+                    pass
+                if find_overwrite_dialog(process_id=main_pid):
+                    if not confirm_overwrite_dialog(overwrite_dlg):
+                        raise RuntimeError("Overwrite dialog detected but could not confirm with Y/Yes")
+                if self.screenshotter:
+                    self.screenshotter.snap("overwrite_confirmed")
+                break
         except Exception as e:
             controls = describe_controls(dialog, limit=35)
             if self.screenshotter:
@@ -624,7 +679,6 @@ class TecZoneSession:
             )
 
         deadline = time.time() + float(self.workflow.get("timeouts", {}).get("exportCompleteSeconds", 30))
-        main_pid = self._main_process_id()
         while time.time() < deadline:
             overwrite_dlg = find_overwrite_dialog(process_id=main_pid)
             if overwrite_dlg:
@@ -643,7 +697,7 @@ class TecZoneSession:
                     self.screenshotter.snap("export_failed")
                 raise NeedsHelpError(f"Unexpected dialog during export: {unexpected}")
 
-            if not save_dialog_present(parent=self.main):
+            if not save_dialog_present(parent=self.main, process_id=main_pid):
                 if Path(export_path).exists() and Path(export_path).stat().st_size > 0:
                     if self.screenshotter:
                         self.screenshotter.snap("export_done")
