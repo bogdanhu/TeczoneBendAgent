@@ -29,6 +29,11 @@ Optional:
 python worker.py --jobs-dir X:\\33259_TEST_OC_20260206-210632\\WORK\\jobs --disable-sounds
 ```
 
+Disable overlay (useful if Tk crashes in your environment):
+```powershell
+python worker.py --jobs-dir X:\\33259_TEST_OC_20260206-210632\\WORK\\jobs --no-overlay
+```
+
 Run once from project root:
 ```powershell
 python worker.py --project-root X:\\33259_TEST_OC_20260206-210632 --once

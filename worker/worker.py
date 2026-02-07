@@ -156,7 +156,7 @@ def format_overlay_text(job_id, index, total, step, part_name, hotkey_hint, paus
     return f"WORKER: {job_id} {paused_txt}[{index}/{total}] {step} {part_name} | hint: {hotkey_hint}"
 
 
-def process_job(job_path, hotkey_pause="ctrl+alt+p", disable_hotkeys=False, disable_sounds=False):
+def process_job(job_path, hotkey_pause="ctrl+alt+p", disable_hotkeys=False, disable_sounds=False, no_overlay=False):
     job = read_json(job_path)
     job_id = job["jobId"]
     project_root = job["projectRoot"]
@@ -189,8 +189,14 @@ def process_job(job_path, hotkey_pause="ctrl+alt+p", disable_hotkeys=False, disa
     effective_hotkey = settings.get("hotkeyPause", hotkey_pause)
     hotkey_hint = effective_hotkey if hotkey_enabled else "hotkeys disabled"
 
-    overlay = Overlay(format_overlay_text(job_id, 0, total_parts, "INIT", "-", hotkey_hint))
-    overlay.start()
+    overlay = None
+    if not no_overlay:
+        try:
+            overlay = Overlay(format_overlay_text(job_id, 0, total_parts, "INIT", "-", hotkey_hint))
+            overlay.start()
+        except Exception as e:
+            logger.warning("Overlay disabled due startup error: %s", e)
+            overlay = None
     screenshotter = Screenshotter(str(screenshots_dir))
 
     periodic_seconds = settings.get("screenshotsEverySeconds", 0)
@@ -216,7 +222,8 @@ def process_job(job_path, hotkey_pause="ctrl+alt+p", disable_hotkeys=False, disa
     overall_status = "DONE"
 
     def set_overlay(index, step, part_name, paused=False):
-        overlay.set_text(format_overlay_text(job_id, index, total_parts, step, part_name, hotkey_hint, paused=paused))
+        if overlay is not None:
+            overlay.set_text(format_overlay_text(job_id, index, total_parts, step, part_name, hotkey_hint, paused=paused))
 
     try:
         tz = TecZoneSession(logger, screenshotter)
@@ -334,7 +341,8 @@ def process_job(job_path, hotkey_pause="ctrl+alt+p", disable_hotkeys=False, disa
     finally:
         stop_event.set()
         pause_controller.stop()
-        overlay.stop()
+        if overlay is not None:
+            overlay.stop()
 
     if overall_status == "DONE" and any(p["status"] == "FAILED" for p in result["parts"]):
         overall_status = "PARTIAL" if any(p["status"] == "DONE" for p in result["parts"]) else "FAILED"
@@ -348,7 +356,7 @@ def process_job(job_path, hotkey_pause="ctrl+alt+p", disable_hotkeys=False, disa
     return result_path, overall_status
 
 
-def run_loop(jobs_dir, hotkey_pause="ctrl+alt+p", disable_hotkeys=False, disable_sounds=False, once=False):
+def run_loop(jobs_dir, hotkey_pause="ctrl+alt+p", disable_hotkeys=False, disable_sounds=False, once=False, no_overlay=False):
     jobs_dir = Path(jobs_dir)
     state_dir = jobs_dir.parent / "state"
     processed_any = False
@@ -373,6 +381,7 @@ def run_loop(jobs_dir, hotkey_pause="ctrl+alt+p", disable_hotkeys=False, disable
                     hotkey_pause=hotkey_pause,
                     disable_hotkeys=disable_hotkeys,
                     disable_sounds=disable_sounds,
+                    no_overlay=no_overlay,
                 )
             except Exception:
                 status = "FAILED"
@@ -396,6 +405,7 @@ def main():
     parser.add_argument("--hotkey-pause", default="ctrl+alt+p", help="Global pause hotkey")
     parser.add_argument("--disable-hotkeys", action="store_true", help="Disable global hotkeys")
     parser.add_argument("--disable-sounds", action="store_true", help="Disable start/end sounds")
+    parser.add_argument("--no-overlay", action="store_true", help="Disable Tk overlay")
     args = parser.parse_args()
 
     jobs_dir = args.jobs_dir or str(Path(args.project_root) / "WORK" / "jobs")
@@ -405,6 +415,7 @@ def main():
         disable_hotkeys=args.disable_hotkeys,
         disable_sounds=args.disable_sounds,
         once=args.once,
+        no_overlay=args.no_overlay,
     )
 
 
