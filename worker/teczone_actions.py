@@ -13,10 +13,13 @@ from pywinauto.keyboard import send_keys
 
 from ui_utils import (
     click_menu_item_anywhere,
+    confirm_overwrite_dialog,
     describe_controls,
     debug_open_dialog_search,
     dump_window_titles,
+    ensure_dialog_focus,
     find_control,
+    find_overwrite_dialog,
     find_unexpected_dialog,
     handle_possible_dialogs,
     normalize_windows_path,
@@ -582,7 +585,33 @@ class TecZoneSession:
 
         try:
             Path(export_path).parent.mkdir(parents=True, exist_ok=True)
-            set_file_name(dialog, export_path)
+            if not ensure_dialog_focus(dialog, timeout=2.5):
+                self.logger.warning("Save As focus check failed before typing; attempting recovery")
+                try:
+                    dialog.click_input()
+                except Exception:
+                    pass
+                time.sleep(0.2)
+
+            file_edit = set_file_name(dialog, export_path)
+            typed = ""
+            try:
+                typed = (file_edit.window_text() or "").strip()
+            except Exception:
+                typed = ""
+            expected_name = Path(export_path).name.lower()
+            if typed and expected_name not in typed.lower():
+                raise RuntimeError(
+                    f"Save As file name mismatch after typing: expected~{expected_name}; got={typed}"
+                )
+
+            if not ensure_dialog_focus(dialog, timeout=1.8):
+                self.logger.warning("Save As focus check failed after typing; retrying focus")
+                try:
+                    file_edit.set_focus()
+                except Exception:
+                    pass
+
             press_save(dialog)
         except Exception as e:
             controls = describe_controls(dialog, limit=35)
@@ -597,7 +626,18 @@ class TecZoneSession:
         deadline = time.time() + float(self.workflow.get("timeouts", {}).get("exportCompleteSeconds", 30))
         main_pid = self._main_process_id()
         while time.time() < deadline:
-            unexpected = find_unexpected_dialog(process_id=main_pid)
+            overwrite_dlg = find_overwrite_dialog(process_id=main_pid)
+            if overwrite_dlg:
+                if self.screenshotter:
+                    self.screenshotter.snap("overwrite_prompt")
+                if not confirm_overwrite_dialog(overwrite_dlg):
+                    raise NeedsHelpError("Overwrite dialog detected but could not confirm overwrite")
+                if self.screenshotter:
+                    self.screenshotter.snap("overwrite_confirmed")
+                time.sleep(0.3)
+                continue
+
+            unexpected = find_unexpected_dialog(process_id=main_pid, ignore_overwrite=True)
             if unexpected:
                 if self.screenshotter:
                     self.screenshotter.snap("export_failed")

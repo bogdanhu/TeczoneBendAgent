@@ -19,6 +19,14 @@ UNEXPECTED_DIALOG_KEYWORDS = [
     "failed",
     "does not exist",
 ]
+OVERWRITE_DIALOG_KEYWORDS = [
+    "already exists",
+    "replace it",
+    "overwrite",
+    "exists",
+    "suprascr",
+    "replace",
+]
 
 
 def normalize_windows_path(value):
@@ -285,6 +293,82 @@ def set_file_name(dialog, value):
     raise RuntimeError(f"File name edit not found/settable (strict mode): {last_error}")
 
 
+def ensure_dialog_focus(dialog, timeout=2.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            dialog.set_focus()
+        except Exception:
+            pass
+        try:
+            active = Desktop(backend="uia").get_active()
+            top = active
+            try:
+                top = active.top_level_parent()
+            except Exception:
+                top = active
+            if _is_common_file_dialog(top):
+                try:
+                    if int(top.element_info.process_id) == int(dialog.element_info.process_id):
+                        return True
+                except Exception:
+                    return True
+        except Exception:
+            pass
+        time.sleep(0.15)
+    return False
+
+
+def _dialog_blob_text(dlg):
+    chunks = []
+    try:
+        title = (dlg.window_text() or "").strip()
+    except Exception:
+        title = ""
+    if title:
+        chunks.append(title)
+    try:
+        for txt in dlg.descendants(control_type="Text"):
+            t = (txt.window_text() or "").strip()
+            if t:
+                chunks.append(t)
+    except Exception:
+        pass
+    return " | ".join(chunks).lower()
+
+
+def find_overwrite_dialog(process_id=None):
+    desktop = Desktop(backend="uia")
+    for dlg in desktop.windows():
+        try:
+            if process_id is not None and int(dlg.element_info.process_id) != int(process_id):
+                continue
+        except Exception:
+            if process_id is not None:
+                continue
+        blob = _dialog_blob_text(dlg)
+        if not blob:
+            continue
+        if not any(k in blob for k in OVERWRITE_DIALOG_KEYWORDS):
+            continue
+        btn = find_child(dlg, control_type="Button", title_re=r"(?i)yes|replace|overwrite|ok|da|oui|ja")
+        if btn:
+            return dlg
+    return None
+
+
+def confirm_overwrite_dialog(dlg):
+    btn = find_child(dlg, control_type="Button", title_re=r"(?i)^yes$|replace|overwrite|^ok$|^da$|^oui$|^ja$")
+    if btn:
+        btn.click_input()
+        return True
+    try:
+        dlg.type_keys("{ENTER}")
+        return True
+    except Exception:
+        return False
+
+
 def press_open(dialog):
     button = find_child(dialog, control_type="Button", auto_id="1")
     if not button:
@@ -377,7 +461,7 @@ def click_menu_item_anywhere(label, timeout=4, process_id=None):
     return False
 
 
-def find_unexpected_dialog(process_id=None):
+def find_unexpected_dialog(process_id=None, ignore_overwrite=False):
     desktop = Desktop(backend="uia")
     for dlg in desktop.windows():
         try:
@@ -409,6 +493,8 @@ def find_unexpected_dialog(process_id=None):
         except Exception:
             pass
         whole = " | ".join(text_blobs)
+        if ignore_overwrite and any(k in whole for k in OVERWRITE_DIALOG_KEYWORDS):
+            continue
         if any(k in whole for k in UNEXPECTED_DIALOG_KEYWORDS):
             return f"{title}: {whole[:300]}"
     return None
