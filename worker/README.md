@@ -3,6 +3,8 @@
 ## What this does
 This worker watches `WORK\jobs` for `job.json` files, drives TecZone Bend via UI Automation, exports flat `.geo`, and writes `result.json` plus screenshots and logs. It stops with `NEEDS_HELP` when UI elements are missing or unexpected dialogs appear.
 
+Export target is **File -> Export -> 2D Geometry** (NOT NC Code).
+
 ## Prereqs
 - Windows 11
 - Python 3.10+
@@ -47,6 +49,11 @@ python worker.py --jobs-dir X:\\33259_TEST_OC_20260206-210632\\WORK\\jobs --tecz
 Run once from project root:
 ```powershell
 python worker.py --project-root X:\\33259_TEST_OC_20260206-210632 --once
+```
+
+Run onepart job with no overlay:
+```powershell
+python worker.py --jobs-dir X:\\33259_TEST_OC_20260206-210632\\WORK\\jobs --once --no-overlay
 ```
 
 ## Example job (realistic paths)
@@ -95,6 +102,15 @@ python worker.py --project-root X:\\33259_TEST_OC_20260206-210632 --once
 - Needs help: `WORK\logs\<jobId>_NEEDS_HELP.txt`
 - Window dump: `WORK\logs\windows.json`
 
+## TecZone Workflow Config
+- Default config file: `worker\teczone_workflow.json`
+- Worker uses this config by default for:
+- optional bend entry hotkey
+- export menu path
+- export timeouts
+- Optional override per job:
+- `settings.teczoneWorkflowConfig` with a custom JSON path
+
 ## Notes
 - If a control/menu is not found, the worker writes `NEEDS_HELP` and stops. Check screenshots in `WORK\screenshots\<jobId>` and the log at `WORK\logs\<jobId>.log`.
 - `result.json` is written to `WORK\logs\<jobId>.result.json`.
@@ -111,6 +127,13 @@ python worker.py --jobs-dir X:\\33259_TEST_OC_20260206-210632\\WORK\\jobs --no-o
 - If `Flux.exe` is not running, worker tries to launch TecZone using `--teczone-exe`, then registry/program-files fallbacks.
 - If no executable is found, worker enters `NEEDS_HELP` with instruction to set `--teczone-exe`.
 - If TecZone is blocked by license/update dialogs, close those dialogs manually and rerun the job.
+- Material behavior:
+- material is mandatory for production flow; if worker cannot open/select material, it stops with `NEEDS_HELP`.
+
+## Export Troubleshooting
+- `Save As dialog not found`: adjust `menuExportPath` and `timeouts.saveAsSeconds` in `worker\teczone_workflow.json`.
+- `Export menu path mismatch`: verify TecZone menu language and update `menuExportPath` to match visible labels.
+- If export dialog appears but file is not produced, increase `timeouts.exportCompleteSeconds`.
 
 ## How to rollback to last working tag
 Create `working` tags only after real Dorina validation (`OPEN_FILE` passes, at least one `.geo` exported, and `WORK\logs\<jobId>.result.json` exists).

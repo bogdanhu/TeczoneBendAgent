@@ -4,6 +4,7 @@ import time
 from pywinauto import Desktop
 
 OPEN_TITLE_RE = r"(?i)\bopen\b|deschide|oeffnen|offnen|ouvrir"
+SAVE_TITLE_RE = r"(?i)\bsave\b|\bexport\b|salveaza|speichern|enregistrer"
 FILE_NAME_LABEL_RE = r"(?i)file\s*name|nume\s*fisier|nume\s*fi.sier|dateiname"
 UNEXPECTED_DIALOG_KEYWORDS = ["warning", "confirm", "overwrite", "error", "attention", "question"]
 
@@ -133,6 +134,36 @@ def find_open_dialog(parent=None, title_re=OPEN_TITLE_RE):
     return None
 
 
+def find_save_dialog(parent=None, title_re=SAVE_TITLE_RE):
+    for dlg in _open_search_roots(parent):
+        try:
+            title = (dlg.window_text() or "").strip()
+        except Exception:
+            title = ""
+        if title and not re.search(title_re, title):
+            continue
+
+        edit = find_child(dlg, control_type="Edit", auto_id="1148")
+        if not edit:
+            edit = find_child(dlg, control_type="Edit", title_re=FILE_NAME_LABEL_RE)
+        if not edit:
+            try:
+                edits = dlg.descendants(control_type="Edit")
+            except Exception:
+                edits = []
+            edit = edits[0] if edits else None
+        if not edit:
+            continue
+
+        save_btn = find_child(dlg, control_type="Button", auto_id="1")
+        if not save_btn:
+            save_btn = find_child(dlg, control_type="Button", title_re=r"(?i)save|export|ok")
+        if not save_btn:
+            continue
+        return dlg
+    return None
+
+
 def debug_open_dialog_search(parent=None):
     found_windows = []
     for dlg in _open_search_roots(parent):
@@ -212,8 +243,58 @@ def wait_for_open_dialog(timeout=5, parent=None):
     raise RuntimeError("Open file dialog not found")
 
 
+def wait_for_save_dialog(timeout=20, parent=None):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        dlg = find_save_dialog(parent=parent)
+        if dlg:
+            return dlg
+        time.sleep(0.25)
+    raise RuntimeError("Save/Export dialog not found")
+
+
 def open_dialog_present(parent=None):
     return find_open_dialog(parent=parent) is not None
+
+
+def save_dialog_present(parent=None):
+    return find_save_dialog(parent=parent) is not None
+
+
+def press_save(dialog):
+    button = find_child(dialog, control_type="Button", auto_id="1")
+    if not button:
+        button = find_child(dialog, control_type="Button", title_re=r"(?i)^save$|^export$|^ok$")
+    if button:
+        button.click_input()
+        return
+    dialog.type_keys("{ENTER}")
+
+
+def click_menu_item_anywhere(label, timeout=4):
+    pattern = re.compile(rf"(?i)^{re.escape(label)}$|{re.escape(label)}")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for w in Desktop(backend="uia").windows():
+            try:
+                menu_items = w.descendants(control_type="MenuItem")
+            except Exception:
+                continue
+            for item in menu_items:
+                try:
+                    text = item.window_text() or ""
+                except Exception:
+                    text = ""
+                if not text:
+                    continue
+                if pattern.search(text):
+                    try:
+                        item.click_input()
+                        return True
+                    except Exception:
+                        continue
+        time.sleep(0.2)
+    return False
 
 
 def find_unexpected_dialog():

@@ -1,0 +1,12 @@
+{
+  "enterBendHotkey": "b",
+  "useEnterBend": true,
+  "exportMethod": "menu",
+  "menuExportPath": ["File", "Export", "2D Geometry"],
+  "timeouts": {
+    "enterBendSeconds": 120,
+    "exportMenuSeconds": 10,
+    "saveAsSeconds": 20,
+    "exportCompleteSeconds": 30
+  }
+}

@@ -243,6 +243,7 @@ def process_job(
             screenshotter,
             teczone_exe=teczone_exe,
             teczone_title_re=teczone_title_re,
+            workflow_config_path=settings.get("teczoneWorkflowConfig"),
         )
         try:
             set_overlay(0, "CONNECT_TECZONE", "-")
