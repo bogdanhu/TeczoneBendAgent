@@ -88,3 +88,18 @@ python worker.py --project-root X:\\33259_TEST_OC_20260206-210632 --once
 - Persistent behavior specs are stored in `worker\WORKER_SPEC.md`.
 - Worker plays a short sound at job start and job end (can be disabled with `--disable-sounds` or job setting `disableSounds`).
 - Overlay format during run: `WORKER: <jobId> [i/n] <STEP> <partName>` and on pause `WORKER: <jobId> [paused] [i/n] ...`.
+
+## How to rollback to last working tag
+1. Fetch latest tags:
+```powershell
+git fetch --tags
+```
+2. See newest tags:
+```powershell
+git tag --sort=-creatordate
+```
+3. Create a rollback branch from a known working tag (example `v0.1.0`):
+```powershell
+git switch -c rollback/v0.1.0 v0.1.0
+```
+4. Run worker from that branch and validate behavior before any merge back to `main`.
