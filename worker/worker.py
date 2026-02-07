@@ -17,6 +17,102 @@ from xometry_parser import load_xometry_map
 DEFAULT_POLL_SECONDS = 2
 MAJOR_STEPS = ["OPEN_FILE", "SET_MATERIAL", "EXPORT_GEO"]
 
+try:
+    import sentry_sdk
+except Exception:
+    sentry_sdk = None
+
+_TELEMETRY_INIT_DONE = False
+_TELEMETRY_ENABLED = False
+
+
+def resolve_glitchtip_dsn():
+    return os.getenv("GLITCHTIP_DSN") or os.getenv("SENTRY_DSN")
+
+
+def init_glitchtip(logger=None):
+    global _TELEMETRY_INIT_DONE, _TELEMETRY_ENABLED
+    if _TELEMETRY_INIT_DONE:
+        return _TELEMETRY_ENABLED
+
+    dsn = resolve_glitchtip_dsn()
+    _TELEMETRY_INIT_DONE = True
+    if not dsn:
+        _TELEMETRY_ENABLED = False
+        if logger:
+            logger.info("GlitchTip disabled: GLITCHTIP_DSN/SENTRY_DSN not set")
+        return False
+
+    if sentry_sdk is None:
+        _TELEMETRY_ENABLED = False
+        if logger:
+            logger.warning("GlitchTip DSN provided but sentry_sdk is unavailable")
+        return False
+
+    try:
+        sentry_sdk.init(dsn=dsn, traces_sample_rate=0.0)
+        _TELEMETRY_ENABLED = True
+        if logger:
+            logger.info("GlitchTip enabled")
+        return True
+    except Exception as e:
+        _TELEMETRY_ENABLED = False
+        if logger:
+            logger.warning("GlitchTip init failed: %s", e)
+        return False
+
+
+def capture_glitchtip_event(
+    level,
+    message,
+    *,
+    job_id=None,
+    xometry_ref=None,
+    status=None,
+    step=None,
+    part_id=None,
+    project_root=None,
+    input_path=None,
+    export_path=None,
+    log_path=None,
+    screenshots_dir=None,
+    reason=None,
+    exc=None,
+):
+    if not _TELEMETRY_ENABLED or sentry_sdk is None:
+        return
+
+    with sentry_sdk.new_scope() as scope:
+        scope.set_tag("app", "teczonebend-worker")
+        if job_id:
+            scope.set_tag("jobId", str(job_id))
+        if xometry_ref:
+            scope.set_tag("xometryRef", str(xometry_ref))
+        if status:
+            scope.set_tag("status", str(status))
+        if step:
+            scope.set_tag("step", str(step))
+        if part_id is not None:
+            scope.set_tag("partId", str(part_id))
+
+        if project_root:
+            scope.set_extra("projectRoot", str(project_root))
+        if input_path:
+            scope.set_extra("inputPath", str(input_path))
+        if export_path:
+            scope.set_extra("exportPath", str(export_path))
+        if log_path:
+            scope.set_extra("logPath", str(log_path))
+        if screenshots_dir:
+            scope.set_extra("screenshotsDir", str(screenshots_dir))
+        if reason:
+            scope.set_extra("reason", str(reason))
+
+        if exc is not None:
+            sentry_sdk.capture_exception(exc)
+        else:
+            sentry_sdk.capture_message(message, level=level)
+
 
 class PauseController:
     def __init__(self, logger):
@@ -175,12 +271,14 @@ def process_job(
     job = read_json(job_path)
     job_id = job["jobId"]
     project_root = job["projectRoot"]
+    xometry_ref = job.get("xometryRef")
     settings = job.get("settings", {})
 
     log_dir = Path(project_root) / "WORK" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = str(log_dir / f"{job_id}.log")
     logger = configure_logger(log_path)
+    init_glitchtip(logger)
     if not disable_sounds and not settings.get("disableSounds", False):
         play_job_start_sound(logger)
 
@@ -237,6 +335,10 @@ def process_job(
         "logPath": log_path,
     }
     overall_status = "DONE"
+    last_step = "INIT"
+    last_part_id = None
+    last_input_path = None
+    last_export_path = None
 
     def _part_name(i):
         if i < 1 or i > total_parts:
@@ -301,12 +403,28 @@ def process_job(
         )
         try:
             set_overlay(0, "CONNECT_TECZONE", "-")
+            last_step = "CONNECT_TECZONE"
             tz.connect()
         except NeedsHelpError as e:
             overall_status = "NEEDS_HELP"
             screenshotter.snap("needs_help")
             needs_help_path = str(Path(project_root) / "WORK" / "logs" / f"{job_id}_NEEDS_HELP.txt")
             write_needs_help(needs_help_path, "CONNECT_TECZONE", str(e))
+            capture_glitchtip_event(
+                "error",
+                "worker NEEDS_HELP at connect",
+                job_id=job_id,
+                xometry_ref=xometry_ref,
+                status=overall_status,
+                step="CONNECT_TECZONE",
+                part_id=None,
+                project_root=project_root,
+                input_path=None,
+                export_path=None,
+                log_path=log_path,
+                screenshots_dir=str(screenshots_dir),
+                reason=str(e),
+            )
             result["status"] = overall_status
             result_path = str(log_dir / f"{job_id}.result.json")
             write_json(result_path, result)
@@ -317,12 +435,28 @@ def process_job(
 
         if settings.get("dryRun"):
             set_overlay(0, "DRY_RUN", "-")
+            last_step = "DRY_RUN"
             screenshotter.snap("dryrun_connected")
             logger.info("Dry run completed: connected to TecZone and parsed xometry json")
             result["status"] = "DONE"
             result_path = str(log_dir / f"{job_id}.result.json")
             write_json(result_path, result)
             write_json(str(log_dir / "result.json"), result)
+            capture_glitchtip_event(
+                "info",
+                "worker DONE (dryRun)",
+                job_id=job_id,
+                xometry_ref=xometry_ref,
+                status="DONE",
+                step="DRY_RUN",
+                part_id=None,
+                project_root=project_root,
+                input_path=None,
+                export_path=None,
+                log_path=log_path,
+                screenshots_dir=str(screenshots_dir),
+                reason="dry run completed",
+            )
             if not disable_sounds and not settings.get("disableSounds", False):
                 play_job_end_sound(logger, "DONE")
             return result_path, "DONE"
@@ -333,6 +467,9 @@ def process_job(
             part_id = part.get("partId")
             part_name = part.get("partName") or str(part_id or "unknown_part")
             input_path = part.get("path")
+            last_part_id = part_id
+            last_input_path = input_path
+            last_export_path = None
 
             if input_path and os.path.splitext(input_path)[1].lower() not in [".stp", ".step"]:
                 raise NeedsHelpError(f"Unsupported input extension: {input_path}")
@@ -365,6 +502,7 @@ def process_job(
 
             try:
                 step = "OPEN_FILE"
+                last_step = step
                 wait_if_paused(step)
                 set_overlay(part_index, step, part_name)
                 screenshotter.snap("open_file_start")
@@ -373,6 +511,7 @@ def process_job(
                 opened_document = True
 
                 step = "SET_MATERIAL"
+                last_step = step
                 wait_if_paused(step)
                 set_overlay(part_index, step, part_name)
                 screenshotter.snap("material_start")
@@ -383,12 +522,14 @@ def process_job(
                 screenshotter.snap("material_done")
 
                 step = "EXPORT_GEO"
+                last_step = step
                 wait_if_paused(step)
                 set_overlay(part_index, step, part_name)
                 screenshotter.snap("export_start")
                 export_name_template = settings.get("exportNameTemplate", "<partName>.geo")
                 export_name = export_name_template.replace("<partName>", part_name)
                 export_path = str(Path(export_dir) / export_name)
+                last_export_path = export_path
                 tz.export_geo(export_path)
                 part_result["geoPath"] = export_path
                 screenshotter.snap("export_done")
@@ -401,12 +542,43 @@ def process_job(
                 screenshotter.snap("needs_help")
                 needs_help_path = str(Path(project_root) / "WORK" / "logs" / f"{job_id}_NEEDS_HELP.txt")
                 write_needs_help(needs_help_path, f"{step} {part_name}", str(e))
+                capture_glitchtip_event(
+                    "error",
+                    "worker NEEDS_HELP",
+                    job_id=job_id,
+                    xometry_ref=xometry_ref,
+                    status="NEEDS_HELP",
+                    step=step,
+                    part_id=part_id,
+                    project_root=project_root,
+                    input_path=input_path,
+                    export_path=last_export_path,
+                    log_path=log_path,
+                    screenshots_dir=str(screenshots_dir),
+                    reason=str(e),
+                )
                 result["parts"].append(part_result)
                 break
             except Exception as e:
                 part_result["status"] = "FAILED"
                 part_result["notes"] += f"Exception: {e}"
                 logger.error("Exception on part %s: %s", part_id, traceback.format_exc())
+                capture_glitchtip_event(
+                    "error",
+                    "worker FAILED on part",
+                    job_id=job_id,
+                    xometry_ref=xometry_ref,
+                    status="FAILED",
+                    step=step or last_step,
+                    part_id=part_id,
+                    project_root=project_root,
+                    input_path=input_path,
+                    export_path=last_export_path,
+                    log_path=log_path,
+                    screenshots_dir=str(screenshots_dir),
+                    reason=str(e),
+                    exc=e,
+                )
                 screenshotter.snap("failed")
                 if overall_status == "DONE":
                     overall_status = "PARTIAL"
@@ -434,6 +606,38 @@ def process_job(
     result_path = str(log_dir / f"{job_id}.result.json")
     write_json(result_path, result)
     write_json(str(log_dir / "result.json"), result)
+    if overall_status == "DONE":
+        capture_glitchtip_event(
+            "info",
+            "worker DONE",
+            job_id=job_id,
+            xometry_ref=xometry_ref,
+            status="DONE",
+            step=last_step,
+            part_id=last_part_id,
+            project_root=project_root,
+            input_path=last_input_path,
+            export_path=last_export_path,
+            log_path=log_path,
+            screenshots_dir=str(screenshots_dir),
+            reason="job completed",
+        )
+    elif overall_status in ["NEEDS_HELP", "FAILED", "PARTIAL"]:
+        capture_glitchtip_event(
+            "error",
+            f"worker {overall_status}",
+            job_id=job_id,
+            xometry_ref=xometry_ref,
+            status=overall_status,
+            step=last_step,
+            part_id=last_part_id,
+            project_root=project_root,
+            input_path=last_input_path,
+            export_path=last_export_path,
+            log_path=log_path,
+            screenshots_dir=str(screenshots_dir),
+            reason=f"job ended with status={overall_status}",
+        )
     if not disable_sounds and not settings.get("disableSounds", False):
         play_job_end_sound(logger, overall_status)
     return result_path, overall_status
@@ -477,7 +681,23 @@ def run_loop(
                     teczone_exe=teczone_exe,
                     teczone_title_re=teczone_title_re,
                 )
-            except Exception:
+            except Exception as e:
+                capture_glitchtip_event(
+                    "error",
+                    "worker FAILED in run_loop",
+                    job_id=job_id,
+                    xometry_ref=job.get("xometryRef"),
+                    status="FAILED",
+                    step="RUN_LOOP",
+                    part_id=None,
+                    project_root=job.get("projectRoot"),
+                    input_path=None,
+                    export_path=None,
+                    log_path=None,
+                    screenshots_dir=None,
+                    reason=str(e),
+                    exc=e,
+                )
                 status = "FAILED"
             finally:
                 release_job(marker, status)
@@ -502,19 +722,43 @@ def main():
     parser.add_argument("--no-overlay", action="store_true", help="Disable Tk overlay")
     parser.add_argument("--teczone-exe", help="Explicit path to Flux.exe for auto-start")
     parser.add_argument("--teczone-title-re", help="Regex for TecZone main window title matching")
+    parser.add_argument("--glitchtip-test", action="store_true", help="Send test event to GlitchTip and exit")
     args = parser.parse_args()
 
+    init_glitchtip()
+    if args.glitchtip_test:
+        capture_glitchtip_event(
+            "info",
+            "dorina glitchtip test",
+            status="TEST",
+            step="GLITCHTIP_TEST",
+            reason="manual test event",
+        )
+        print("GlitchTip test event sent (if DSN configured).")
+        return
+
     jobs_dir = args.jobs_dir or str(Path(args.project_root) / "WORK" / "jobs")
-    run_loop(
-        jobs_dir,
-        hotkey_pause=args.hotkey_pause,
-        disable_hotkeys=args.disable_hotkeys,
-        disable_sounds=args.disable_sounds,
-        once=args.once,
-        no_overlay=args.no_overlay,
-        teczone_exe=args.teczone_exe,
-        teczone_title_re=args.teczone_title_re,
-    )
+    try:
+        run_loop(
+            jobs_dir,
+            hotkey_pause=args.hotkey_pause,
+            disable_hotkeys=args.disable_hotkeys,
+            disable_sounds=args.disable_sounds,
+            once=args.once,
+            no_overlay=args.no_overlay,
+            teczone_exe=args.teczone_exe,
+            teczone_title_re=args.teczone_title_re,
+        )
+    except Exception as e:
+        capture_glitchtip_event(
+            "error",
+            "worker uncaught exception",
+            status="FAILED",
+            step="MAIN",
+            reason=str(e),
+            exc=e,
+        )
+        raise
 
 
 if __name__ == "__main__":

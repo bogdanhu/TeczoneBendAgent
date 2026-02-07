@@ -56,6 +56,27 @@ Run onepart job with no overlay:
 python worker.py --jobs-dir X:\\33259_TEST_OC_20260206-210632\\WORK\\jobs --once --no-overlay
 ```
 
+## GlitchTip (Sentry-compatible)
+- Worker reads DSN from `GLITCHTIP_DSN` (fallback: `SENTRY_DSN`).
+- If DSN is not set, telemetry is disabled and worker runs normally.
+- Performance tracing is disabled (`traces_sample_rate=0.0`).
+- Reported tags include: `app`, `jobId`, `xometryRef`, `status`, `step`, `partId`.
+- Reported extras include: `projectRoot`, `inputPath`, `exportPath`, `logPath`, `screenshotsDir`.
+
+Set DSN in PowerShell and run:
+```powershell
+$env:GLITCHTIP_DSN="http://2345d226774846649312241fe51caea2@192.168.2.130:8090/1"
+python worker.py --project-root X:\\33259_TEST_OC_20260206-210632 --once --no-overlay
+```
+
+Send a manual test event:
+```powershell
+$env:GLITCHTIP_DSN="http://2345d226774846649312241fe51caea2@192.168.2.130:8090/1"
+python worker.py --project-root X:\\33259_TEST_OC_20260206-210632 --glitchtip-test
+```
+
+Expected message in GlitchTip: `dorina glitchtip test`.
+
 ## Example job (realistic paths)
 ```json
 {
