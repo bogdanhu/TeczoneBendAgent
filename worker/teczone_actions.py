@@ -204,7 +204,10 @@ class TecZoneSession:
             )
 
         try:
-            self.main = win.wrapper_object()
+            if hasattr(win, "wrapper_object"):
+                self.main = win.wrapper_object()
+            else:
+                self.main = win
             self.logger.info("Connected to TecZone window: %s", self.main.window_text())
         except Exception as e:
             raise NeedsHelpError(f"TecZone main window wrapper failed: {e}")
