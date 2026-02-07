@@ -306,6 +306,7 @@ class TecZoneSession:
         if Path(path).suffix.lower() not in [".stp", ".step"]:
             raise NeedsHelpError(f"Unsupported input extension: {path}")
 
+        open_start = time.perf_counter()
         self.main.set_focus()
         main_pid = self._main_process_id()
         try:
@@ -351,8 +352,18 @@ class TecZoneSession:
                 )
 
         try:
-            set_file_name(dialog, path)
+            detect_elapsed = time.perf_counter() - open_start
+            strategy = self._fill_open_dialog_file(dialog, path)
+            fill_elapsed = time.perf_counter() - open_start - detect_elapsed
             press_open(dialog)
+            press_elapsed = time.perf_counter() - open_start
+            self.logger.info(
+                "OPEN timings: detect=%.3fs, fill=%.3fs, to_press_open=%.3fs, strategy=%s",
+                detect_elapsed,
+                max(fill_elapsed, 0.0),
+                press_elapsed,
+                strategy,
+            )
         except Exception as e:
             controls = describe_controls(dialog, limit=35)
             raise NeedsHelpError(
@@ -376,6 +387,39 @@ class TecZoneSession:
             "Open dialog did not close within 90 seconds; "
             f"searched={dbg['searched']}; found_windows={dbg['found_windows']}"
         )
+
+    def _fill_open_dialog_file(self, dialog, full_path):
+        full_path = normalize_windows_path(full_path)
+        file_name = Path(full_path).name
+        directory = normalize_windows_path(str(Path(full_path).parent))
+
+        # Strategy A: full path directly in File name.
+        try:
+            edit = set_file_name(dialog, full_path)
+            typed = ""
+            try:
+                typed = (edit.window_text() or "").strip()
+            except Exception:
+                typed = ""
+            if typed and (":" in typed or file_name.lower() in typed.lower()):
+                return "full_path"
+        except Exception:
+            pass
+
+        # Strategy B (requested): F4 -> directory -> Enter -> file name -> Enter/Open.
+        if not ensure_dialog_focus(dialog, timeout=1.5):
+            try:
+                dialog.click_input()
+            except Exception:
+                pass
+        send_keys("{F4}")
+        time.sleep(0.08)
+        send_keys("^a{BACKSPACE}")
+        send_keys(directory, with_spaces=True)
+        send_keys("{ENTER}")
+        time.sleep(0.2)
+        set_file_name(dialog, file_name)
+        return "f4_directory_then_filename"
 
     def set_material(self, material):
         if not material:
