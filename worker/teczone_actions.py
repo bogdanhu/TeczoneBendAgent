@@ -40,6 +40,7 @@ DEFAULT_WORKFLOW = {
         "saveAsSeconds": 20,
         "exportCompleteSeconds": 30,
     },
+    "materialRequired": False,
 }
 
 
@@ -77,7 +78,7 @@ class TecZoneSession:
         self.workflow_config_path = workflow_config_path
 
         self.main_title_re = os.getenv("TECZONE_MAIN_TITLE_RE", r".*TecZone.*Bend.*")
-        self.material_menu_titles = ["Material", "Material..."]
+        self.material_menu_titles = ["Material", "Material...", "Stock"]
         self.material_dialog_title_re = os.getenv("TECZONE_MATERIAL_DIALOG_RE", r".*Material.*")
         self.workflow = self._load_workflow()
 
@@ -363,15 +364,75 @@ class TecZoneSession:
             raise NeedsHelpError("Material from Xometry missing; material is required")
 
         self.main.set_focus()
-        menu_clicked = False
+        material_required = bool(self.workflow.get("materialRequired", False))
+        main_pid = self._main_process_id()
+
+        def maybe_fail_or_skip(message):
+            if material_required:
+                raise NeedsHelpError(message)
+            self.logger.warning("Material skipped: %s", message)
+            return None, f"material not set: {message}"
+
+        # First attempt: direct menu item if currently visible.
         for title in self.material_menu_titles:
             ctrl = find_control(self.main, title=title, control_type="MenuItem")
             if ctrl:
-                ctrl.click_input()
-                menu_clicked = True
-                break
-        if not menu_clicked:
-            raise NeedsHelpError("Material menu item not found")
+                try:
+                    ctrl.click_input()
+                    break
+                except Exception:
+                    continue
+        else:
+            # Fallback: open top menus and search material-like entries for this process only.
+            candidates = []
+            for hotkey in ["%f", "%e", "%v", "%h"]:
+                try:
+                    self.main.set_focus()
+                    self.main.type_keys(hotkey, set_foreground=True)
+                    time.sleep(0.35)
+                except Exception:
+                    continue
+
+                for w in Desktop(backend="uia").windows():
+                    try:
+                        if main_pid is not None and int(w.element_info.process_id) != int(main_pid):
+                            continue
+                    except Exception:
+                        continue
+                    try:
+                        items = w.descendants(control_type="MenuItem")
+                    except Exception:
+                        continue
+                    for item in items:
+                        try:
+                            txt = (item.window_text() or "").strip()
+                        except Exception:
+                            txt = ""
+                        if not txt:
+                            continue
+                        if re.search(r"(?i)material|stock|werkstoff|materiau|inox|steel", txt):
+                            candidates.append(item)
+                try:
+                    self.main.type_keys("{ESC}", set_foreground=True)
+                except Exception:
+                    pass
+
+                if candidates:
+                    break
+
+            if not candidates:
+                return maybe_fail_or_skip("material menu item not found")
+
+            clicked = False
+            for item in candidates:
+                try:
+                    item.click_input()
+                    clicked = True
+                    break
+                except Exception:
+                    continue
+            if not clicked:
+                return maybe_fail_or_skip("material menu item could not be clicked")
 
         deadline = time.time() + 15
         dialog = None
@@ -383,12 +444,13 @@ class TecZoneSession:
             except Exception:
                 pass
             time.sleep(0.2)
+
         if not dialog or not dialog.exists(timeout=0.2):
-            raise NeedsHelpError("Material selection dialog not found")
+            return maybe_fail_or_skip("material selection dialog not found")
 
         items = dialog.descendants(control_type="ListItem")
         if not items:
-            raise NeedsHelpError("Material list items not found")
+            return maybe_fail_or_skip("material list items not found")
 
         used_material = None
         note = ""
@@ -410,7 +472,7 @@ class TecZoneSession:
         else:
             dialog.type_keys("{ENTER}")
 
-        unexpected = find_unexpected_dialog(process_id=self._main_process_id())
+        unexpected = find_unexpected_dialog(process_id=main_pid)
         if unexpected:
             raise NeedsHelpError(f"Unexpected dialog after setting material: {unexpected}")
 
@@ -468,11 +530,12 @@ class TecZoneSession:
             self.main.type_keys("%f", set_foreground=True)
 
         timeout = float(self.workflow.get("timeouts", {}).get("exportMenuSeconds", 10))
-        if not click_menu_item_anywhere(menu_path_items[1], timeout=timeout):
+        pid = self._main_process_id()
+        if not click_menu_item_anywhere(menu_path_items[1], timeout=timeout, process_id=pid):
             raise NeedsHelpError(
                 f"Export menu item not found via fallback; menu path={menu_path_items}"
             )
-        if not click_menu_item_anywhere(menu_path_items[2], timeout=timeout):
+        if not click_menu_item_anywhere(menu_path_items[2], timeout=timeout, process_id=pid):
             raise NeedsHelpError(
                 f"Export target item not found via fallback; menu path={menu_path_items}"
             )
@@ -546,3 +609,8 @@ class TecZoneSession:
 
     def get_thickness_mm(self):
         return None
+
+    def close_active_file(self):
+        self.main.set_focus()
+        self.main.type_keys("^w", set_foreground=True)
+        time.sleep(0.4)

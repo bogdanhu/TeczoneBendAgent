@@ -138,7 +138,31 @@ def _is_common_file_dialog(dlg):
         class_name = ""
 
     has_file_name = find_child(dlg, auto_id="1148") is not None
+    if not has_file_name:
+        label = find_child(dlg, control_type="Text", title_re=FILE_NAME_LABEL_RE)
+        if label:
+            try:
+                edits = dlg.descendants(control_type="Edit")
+            except Exception:
+                edits = []
+            has_file_name = len(edits) > 0
+    if not has_file_name:
+        try:
+            combos = dlg.descendants(control_type="ComboBox")
+        except Exception:
+            combos = []
+        for combo in combos:
+            try:
+                combo_title = (combo.window_text() or "").strip()
+            except Exception:
+                combo_title = ""
+            if combo_title and re.search(FILE_NAME_LABEL_RE, combo_title):
+                has_file_name = True
+                break
+
     has_primary = find_child(dlg, control_type="Button", auto_id="1") is not None
+    if not has_primary:
+        has_primary = find_child(dlg, control_type="Button", title_re=r"(?i)open|save|export|ok") is not None
     has_cancel = find_child(dlg, control_type="Button", auto_id="2") is not None
 
     if class_name == "#32770":
@@ -168,6 +192,12 @@ def find_save_dialog(parent=None, title_re=SAVE_TITLE_RE):
         except Exception:
             title = ""
         if title and re.search(title_re, title):
+            return dlg
+        # Structure fallback for builds that expose non-standard title text.
+        primary = find_child(dlg, control_type="Button", auto_id="1")
+        if not primary:
+            primary = find_child(dlg, control_type="Button", title_re=r"(?i)^save$|^export$|^ok$")
+        if primary:
             return dlg
     return None
 
@@ -325,11 +355,17 @@ def press_save(dialog):
     dialog.type_keys("{ENTER}")
 
 
-def click_menu_item_anywhere(label, timeout=4):
-    pattern = re.compile(rf"(?i)^{re.escape(label)}$|{re.escape(label)}")
+def click_menu_item_anywhere(label, timeout=4, process_id=None):
+    pattern = re.compile(rf"(?i)^{re.escape(label)}$")
     deadline = time.time() + timeout
     while time.time() < deadline:
         for w in Desktop(backend="uia").windows():
+            try:
+                if process_id is not None and int(w.element_info.process_id) != int(process_id):
+                    continue
+            except Exception:
+                if process_id is not None:
+                    continue
             try:
                 menu_items = w.descendants(control_type="MenuItem")
             except Exception:

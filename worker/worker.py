@@ -15,6 +15,7 @@ from ui_utils import dump_window_titles, get_active_window_title
 from xometry_parser import load_xometry_map
 
 DEFAULT_POLL_SECONDS = 2
+MAJOR_STEPS = ["OPEN_FILE", "SET_MATERIAL", "EXPORT_GEO"]
 
 
 class PauseController:
@@ -155,9 +156,11 @@ def write_needs_help(path, step, found):
     write_json(windows_json_path, {"windows": titles})
 
 
-def format_overlay_text(job_id, index, total, step, part_name, hotkey_hint, paused=False):
-    paused_txt = "[paused] " if paused else ""
-    return f"WORKER: {job_id} {paused_txt}[{index}/{total}] {step} {part_name} | hint: {hotkey_hint}"
+def format_overlay_text(job_id, done_steps, total_steps, current_action, next_action, hotkey_hint, paused=False):
+    state = "PAUSED" if paused else "RUNNING"
+    line1 = f"WORKER {state}: {job_id} | steps {done_steps}/{total_steps} | current: {current_action}"
+    line2 = f"next: {next_action} | hint: {hotkey_hint} = pause/resume"
+    return f"{line1}\n{line2}"
 
 
 def process_job(
@@ -197,14 +200,16 @@ def process_job(
 
     input_files = job.get("inputFiles", [])
     total_parts = len(input_files)
+    total_steps = total_parts * len(MAJOR_STEPS)
     hotkey_enabled = (not disable_hotkeys) and (not settings.get("disableHotkeys", False))
     effective_hotkey = settings.get("hotkeyPause", hotkey_pause)
     hotkey_hint = effective_hotkey if hotkey_enabled else "hotkeys disabled"
 
     overlay = None
+    initial_next = "OPEN_FILE" if total_parts > 0 else "WAIT_JOB"
     if not no_overlay:
         try:
-            overlay = Overlay(format_overlay_text(job_id, 0, total_parts, "INIT", "-", hotkey_hint))
+            overlay = Overlay(format_overlay_text(job_id, 0, total_steps, "INIT", initial_next, hotkey_hint))
             overlay.start()
         except Exception as e:
             logger.warning("Overlay disabled due startup error: %s", e)
@@ -233,9 +238,58 @@ def process_job(
     }
     overall_status = "DONE"
 
-    def set_overlay(index, step, part_name, paused=False):
+    def _part_name(i):
+        if i < 1 or i > total_parts:
+            return "-"
+        candidate = input_files[i - 1].get("partName")
+        if candidate:
+            return candidate
+        pid = input_files[i - 1].get("partId")
+        return str(pid or "unknown_part")
+
+    def _step_index(step_name):
+        try:
+            return MAJOR_STEPS.index(step_name) + 1
+        except ValueError:
+            return None
+
+    def _overlay_progress(part_index, step_name):
+        idx = _step_index(step_name)
+        if idx is None:
+            if step_name == "CONNECT_TECZONE":
+                return 0, f"OPEN_FILE {_part_name(1)}" if total_parts else "DRY_RUN"
+            if step_name == "DRY_RUN":
+                return 0, "FINISH_JOB"
+            if step_name == "CLOSE_FILE":
+                done_steps = min(total_steps, part_index * len(MAJOR_STEPS))
+                next_action = f"OPEN_FILE {_part_name(part_index + 1)}" if part_index < total_parts else "FINISH_JOB"
+                return done_steps, next_action
+            return 0, "WAIT"
+
+        done_steps = ((part_index - 1) * len(MAJOR_STEPS)) + (idx - 1)
+        if idx < len(MAJOR_STEPS):
+            next_action = f"{MAJOR_STEPS[idx]} {_part_name(part_index)}"
+        elif part_index < total_parts:
+            next_action = f"OPEN_FILE {_part_name(part_index + 1)}"
+        else:
+            next_action = "FINISH_JOB"
+        return done_steps, next_action
+
+    def set_overlay(part_index, step, part_name, paused=False):
         if overlay is not None:
-            overlay.set_text(format_overlay_text(job_id, index, total_parts, step, part_name, hotkey_hint, paused=paused))
+            done_steps, next_action = _overlay_progress(part_index, step)
+            current_action = f"{step} {part_name}".strip()
+            overlay.set_text(
+                format_overlay_text(
+                    job_id,
+                    done_steps,
+                    total_steps,
+                    current_action,
+                    next_action,
+                    hotkey_hint,
+                    paused=paused,
+                )
+            )
 
     try:
         tz = TecZoneSession(
@@ -296,6 +350,7 @@ def process_job(
             }
 
             step = ""
+            opened_document = False
 
             def wait_if_paused(current_step):
                 nonlocal pause_shot_taken
@@ -315,6 +370,7 @@ def process_job(
                 screenshotter.snap("open_file_start")
                 tz.open_file(input_path)
                 screenshotter.snap("open_file_done")
+                opened_document = True
 
                 step = "SET_MATERIAL"
                 wait_if_paused(step)
@@ -354,6 +410,15 @@ def process_job(
                 screenshotter.snap("failed")
                 if overall_status == "DONE":
                     overall_status = "PARTIAL"
+            finally:
+                try:
+                    if opened_document:
+                        wait_if_paused("CLOSE_FILE")
+                        set_overlay(part_index, "CLOSE_FILE", part_name)
+                        tz.close_active_file()
+                        screenshotter.snap("close_file_done")
+                except Exception as e:
+                    logger.warning("Failed to close active file with Ctrl+W: %s", e)
 
             result["parts"].append(part_result)
     finally:
