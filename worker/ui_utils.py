@@ -1,7 +1,11 @@
-import time
 import re
+import time
 
 from pywinauto import Desktop
+
+OPEN_TITLE_RE = r"(?i)\bopen\b|deschide|oeffnen|offnen|ouvrir"
+FILE_NAME_LABEL_RE = r"(?i)file\s*name|nume\s*fisier|nume\s*fi.sier|dateiname"
+UNEXPECTED_DIALOG_KEYWORDS = ["warning", "confirm", "overwrite", "error", "attention", "question"]
 
 
 def wait_for_window(title_re, timeout=10, backend="uia"):
@@ -59,10 +63,97 @@ def find_child(parent, control_type=None, title_re=None, auto_id=None, title=Non
     return None
 
 
+def describe_controls(parent, limit=40):
+    items = []
+    try:
+        descendants = parent.descendants()
+    except Exception:
+        descendants = []
+    for ctrl in descendants[:limit]:
+        try:
+            ctrl_type = ctrl.element_info.control_type
+        except Exception:
+            ctrl_type = ""
+        try:
+            ctrl_title = ctrl.window_text() or ""
+        except Exception:
+            ctrl_title = ""
+        try:
+            ctrl_auto_id = ctrl.element_info.automation_id or ""
+        except Exception:
+            ctrl_auto_id = ""
+        items.append(f"{ctrl_type}|title={ctrl_title}|auto_id={ctrl_auto_id}")
+    return items
+
+
+def _open_search_roots(parent=None):
+    roots = []
+    if parent is not None:
+        roots.append(parent)
+        try:
+            roots.extend(parent.descendants(control_type="Window"))
+        except Exception:
+            pass
+    try:
+        roots.extend(Desktop(backend="uia").windows())
+    except Exception:
+        pass
+    return roots
+
+
+def find_open_dialog(parent=None, title_re=OPEN_TITLE_RE):
+    for dlg in _open_search_roots(parent):
+        try:
+            title = (dlg.window_text() or "").strip()
+        except Exception:
+            title = ""
+
+        edit = find_child(dlg, control_type="Edit", auto_id="1148")
+        if not edit:
+            edit = find_child(dlg, control_type="Edit", title_re=FILE_NAME_LABEL_RE)
+        if not edit:
+            try:
+                edits = dlg.descendants(control_type="Edit")
+            except Exception:
+                edits = []
+            edit = edits[0] if edits else None
+        if not edit:
+            continue
+
+        open_btn = find_child(dlg, control_type="Button", auto_id="1")
+        if not open_btn:
+            open_btn = find_child(dlg, control_type="Button", title_re=OPEN_TITLE_RE)
+        if not open_btn:
+            continue
+
+        if title and not re.search(title_re, title):
+            # Fallback accepted by structure (file name + open button).
+            return dlg
+        return dlg
+    return None
+
+
+def debug_open_dialog_search(parent=None):
+    found_windows = []
+    for dlg in _open_search_roots(parent):
+        try:
+            title = (dlg.window_text() or "").strip()
+        except Exception:
+            title = ""
+        if title:
+            found_windows.append(title)
+    return {
+        "searched": "open dialog by title~OPEN + file_name_edit(auto_id=1148/label File name) + open_button(auto_id=1/title Open)",
+        "found_windows": found_windows[:20],
+    }
+
+
 def set_file_name(dialog, value):
     edit = find_child(dialog, control_type="Edit", auto_id="1148")
     if not edit:
-        label = find_child(dialog, control_type="Text", title_re=r"(?i)file\s*name")
+        label = find_child(dialog, control_type="Text", title_re=FILE_NAME_LABEL_RE)
+        if not label:
+            label = find_child(dialog, control_type="ComboBox", title_re=FILE_NAME_LABEL_RE)
         if label:
             try:
                 edit = label.parent().child_window(control_type="Edit")
@@ -92,7 +183,7 @@ def set_file_name(dialog, value):
 def press_open(dialog):
     button = find_child(dialog, control_type="Button", auto_id="1")
     if not button:
-        button = find_child(dialog, control_type="Button", title_re=r"(?i)^open$")
+        button = find_child(dialog, control_type="Button", title_re=OPEN_TITLE_RE)
     if button:
         button.click_input()
         return
@@ -114,45 +205,15 @@ def wait_window_closed(window, timeout=90):
 def wait_for_open_dialog(timeout=5, parent=None):
     deadline = time.time() + timeout
     while time.time() < deadline:
-        candidates = []
-        if parent is not None:
-            try:
-                candidates.append(parent)
-                candidates.extend(parent.descendants(control_type="Window"))
-            except Exception:
-                pass
-        try:
-            candidates.extend(Desktop(backend="uia").windows())
-        except Exception:
-            pass
-
-        for dlg in candidates:
-            # Common file dialog has a File name edit and an Open button.
-            try:
-                title = (dlg.window_text() or "").strip()
-            except Exception:
-                title = ""
-            if title and "open" not in title.lower():
-                continue
-
-            edit = find_child(dlg, control_type="Edit", auto_id="1148")
-            if not edit:
-                edit = find_child(dlg, control_type="Edit", title_re=r"(?i)file\s*name")
-            if not edit:
-                try:
-                    edits = dlg.descendants(control_type="Edit")
-                except Exception:
-                    edits = []
-                edit = edits[0] if edits else None
-            if not edit:
-                continue
-            open_btn = find_child(dlg, control_type="Button", auto_id="1")
-            if not open_btn:
-                open_btn = find_child(dlg, control_type="Button", title_re=r"(?i)^open$")
-            if open_btn:
-                return dlg
+        dlg = find_open_dialog(parent=parent)
+        if dlg:
+            return dlg
         time.sleep(0.25)
     raise RuntimeError("Open file dialog not found")
+
+
+def open_dialog_present(parent=None):
+    return find_open_dialog(parent=parent) is not None
 
 
 def find_unexpected_dialog():
@@ -162,7 +223,9 @@ def find_unexpected_dialog():
         if not title:
             continue
         title_l = title.lower()
-        if any(k in title_l for k in ["warning", "confirm", "overwrite", "error", "attention", "question"]):
+        if "open" in title_l or "save" in title_l or "export" in title_l:
+            continue
+        if any(k in title_l for k in UNEXPECTED_DIALOG_KEYWORDS):
             return title
     return None
 

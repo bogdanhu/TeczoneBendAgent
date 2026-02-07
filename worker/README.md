@@ -29,6 +29,11 @@ Optional:
 python worker.py --jobs-dir X:\\33259_TEST_OC_20260206-210632\\WORK\\jobs --disable-sounds
 ```
 
+Run once from project root:
+```powershell
+python worker.py --project-root X:\\33259_TEST_OC_20260206-210632 --once
+```
+
 ## Example job (realistic paths)
 ```json
 {
@@ -53,17 +58,27 @@ python worker.py --jobs-dir X:\\33259_TEST_OC_20260206-210632\\WORK\\jobs --disa
 }
 ```
 
-## Quick test today (no UI automation yet)
-1. Set `dryRun` to `true` in your job.
-2. Run:
+## TEST QUICK
+1. Setup env and deps:
 ```powershell
+cd worker
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python worker.py --jobs-dir X:\\33259_TEST_OC_20260206-210632\\WORK\\jobs
+pip install -r requirements.txt
 ```
-3. The worker will:
-- Find the TecZone window (or launch it if `TECZONE_EXE` is set).
-- Parse the `xometry.json` (fails to NEEDS_HELP if parsing fails).
-- Write a screenshot and logs.
+2. Run once:
+```powershell
+python worker.py --project-root X:\\33259_TEST_OC_20260206-210632 --once
+```
+3. Verify:
+- Worker trece de dialogul `Open`.
+- Fișierul `.geo` apare în `WORK\out\flat`.
+- Log și result JSON sunt create în `WORK\logs`.
+4. Debug locations:
+- Screenshots: `WORK\screenshots\<jobId>\`
+- Log: `WORK\logs\<jobId>.log`
+- Needs help: `WORK\logs\<jobId>_NEEDS_HELP.txt`
+- Window dump: `WORK\logs\windows.json`
 
 ## Notes
 - If a control/menu is not found, the worker writes `NEEDS_HELP` and stops. Check screenshots in `WORK\screenshots\<jobId>` and the log at `WORK\logs\<jobId>.log`.
@@ -72,3 +87,4 @@ python worker.py --jobs-dir X:\\33259_TEST_OC_20260206-210632\\WORK\\jobs
 - Input files must be `.stp` or `.step` (case-insensitive) and are read from `job.json`.
 - Persistent behavior specs are stored in `worker\WORKER_SPEC.md`.
 - Worker plays a short sound at job start and job end (can be disabled with `--disable-sounds` or job setting `disableSounds`).
+- Overlay format during run: `WORKER: <jobId> [i/n] <STEP> <partName>` and on pause `WORKER: <jobId> [paused] [i/n] ...`.

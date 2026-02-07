@@ -5,10 +5,12 @@ from pathlib import Path
 from pywinauto.application import Application
 
 from ui_utils import (
-    find_child,
+    describe_controls,
     find_control,
+    debug_open_dialog_search,
     find_unexpected_dialog,
     handle_possible_dialogs,
+    open_dialog_present,
     press_open,
     set_file_name,
     wait_for_open_dialog,
@@ -77,28 +79,45 @@ class TecZoneSession:
                 except Exception:
                     continue
             if not opened:
-                raise NeedsHelpError(f"Open dialog not found and menu fallback failed: {e}")
+                dbg = debug_open_dialog_search(self.main)
+                raise NeedsHelpError(
+                    f"Open dialog not found and menu fallback failed: {e}; "
+                    f"searched={dbg['searched']}; found_windows={dbg['found_windows']}"
+                )
             try:
                 dialog = wait_for_open_dialog(timeout=5, parent=self.main)
             except Exception as e2:
-                raise NeedsHelpError(f"Open dialog not found: {e2}")
+                dbg = debug_open_dialog_search(self.main)
+                raise NeedsHelpError(
+                    f"Open dialog not found: {e2}; "
+                    f"searched={dbg['searched']}; found_windows={dbg['found_windows']}"
+                )
 
         try:
             set_file_name(dialog, path)
             press_open(dialog)
         except Exception as e:
-            raise NeedsHelpError(f"Open dialog interaction failed: {e}")
+            controls = describe_controls(dialog, limit=35)
+            raise NeedsHelpError(
+                "Open dialog interaction failed; "
+                "searched=file_name_edit(auto_id=1148/label File name) + open_button(auto_id=1/title Open); "
+                f"found_controls={controls}; error={e}"
+            )
 
         deadline = time.time() + 90
         while time.time() < deadline:
             unexpected = find_unexpected_dialog()
             if unexpected:
                 raise NeedsHelpError(f"Unexpected dialog while opening file: {unexpected}")
-            if not find_child(self.main, control_type="Window", title="Open"):
+            if not open_dialog_present(parent=self.main):
                 return
             time.sleep(0.3)
 
-        raise NeedsHelpError("Open dialog did not close within 90 seconds")
+        dbg = debug_open_dialog_search(self.main)
+        raise NeedsHelpError(
+            "Open dialog did not close within 90 seconds; "
+            f"searched={dbg['searched']}; found_windows={dbg['found_windows']}"
+        )
 
     def set_material(self, material):
         if not material:

@@ -15,7 +15,6 @@ from ui_utils import dump_window_titles, get_active_window_title
 from xometry_parser import load_xometry_map
 
 DEFAULT_POLL_SECONDS = 2
-STEP_ORDER = ["OPEN_FILE", "SET_MATERIAL", "EXPORT_GEO"]
 
 
 class PauseController:
@@ -35,7 +34,7 @@ class PauseController:
         def on_toggle():
             with self._lock:
                 self._paused = not self._paused
-                state = "PAUSED" if self._paused else "RESUMED"
+                state = "PAUSED by hotkey" if self._paused else "RESUMED by hotkey"
                 self.logger.info(state)
 
         normalized = normalize_hotkey(hotkey_spec)
@@ -152,20 +151,9 @@ def write_needs_help(path, step, found):
     write_json(windows_json_path, {"windows": titles})
 
 
-def build_step_labels(parts):
-    labels = []
-    for part in parts:
-        part_name = part.get("partName") or str(part.get("partId") or "unknown_part")
-        for step in STEP_ORDER:
-            labels.append(f"{step} {part_name}")
-    return labels
-
-
-def format_overlay_text(job_id, done_steps, total_steps, current_label, next_label, hotkey_hint, paused=False):
-    state = "PAUSED" if paused else "RUNNING"
-    line1 = f"WORKER {state}: {job_id} | steps {done_steps}/{total_steps} | current: {current_label}"
-    line2 = f"next: {next_label} | hint: {hotkey_hint} = pause/resume"
-    return f"{line1}\n{line2}"
+def format_overlay_text(job_id, index, total, step, part_name, hotkey_hint, paused=False):
+    paused_txt = "[paused] " if paused else ""
+    return f"WORKER: {job_id} {paused_txt}[{index}/{total}] {step} {part_name} | hint: {hotkey_hint}"
 
 
 def process_job(job_path, hotkey_pause="ctrl+alt+p", disable_hotkeys=False, disable_sounds=False):
@@ -183,7 +171,6 @@ def process_job(job_path, hotkey_pause="ctrl+alt+p", disable_hotkeys=False, disa
 
     screenshots_dir = Path(project_root) / "WORK" / "screenshots" / job_id
     screenshots_dir.mkdir(parents=True, exist_ok=True)
-
     export_dir = settings.get("exportDir") or str(Path(project_root) / "WORK" / "out" / "flat")
     Path(export_dir).mkdir(parents=True, exist_ok=True)
 
@@ -197,26 +184,13 @@ def process_job(job_path, hotkey_pause="ctrl+alt+p", disable_hotkeys=False, disa
             logger.warning("Failed to parse xometry json: %s", e)
 
     input_files = job.get("inputFiles", [])
-    step_labels = build_step_labels(input_files)
-    total_steps = len(step_labels)
-
+    total_parts = len(input_files)
     hotkey_enabled = (not disable_hotkeys) and (not settings.get("disableHotkeys", False))
     effective_hotkey = settings.get("hotkeyPause", hotkey_pause)
     hotkey_hint = effective_hotkey if hotkey_enabled else "hotkeys disabled"
 
-    overlay = Overlay(
-        format_overlay_text(
-            job_id,
-            0,
-            total_steps,
-            "INIT",
-            "CONNECT_TECZONE",
-            hotkey_hint,
-            paused=False,
-        )
-    )
+    overlay = Overlay(format_overlay_text(job_id, 0, total_parts, "INIT", "-", hotkey_hint))
     overlay.start()
-
     screenshotter = Screenshotter(str(screenshots_dir))
 
     periodic_seconds = settings.get("screenshotsEverySeconds", 0)
@@ -226,12 +200,10 @@ def process_job(job_path, hotkey_pause="ctrl+alt+p", disable_hotkeys=False, disa
         pause_controller.start(effective_hotkey)
 
     if periodic_seconds and periodic_seconds > 0:
-
         def periodic():
             while not stop_event.is_set():
                 screenshotter.snap("periodic")
                 stop_event.wait(periodic_seconds)
-
         threading.Thread(target=periodic, daemon=True).start()
 
     result = {
@@ -241,32 +213,15 @@ def process_job(job_path, hotkey_pause="ctrl+alt+p", disable_hotkeys=False, disa
         "screenshotsDir": str(screenshots_dir),
         "logPath": log_path,
     }
-
     overall_status = "DONE"
-    done_steps = 0
 
-    def next_label_at(index):
-        if index + 1 < len(step_labels):
-            return step_labels[index + 1]
-        return "DONE"
-
-    def set_overlay(current_label, next_label, paused=False):
-        overlay.set_text(
-            format_overlay_text(
-                job_id,
-                done_steps,
-                total_steps,
-                current_label,
-                next_label,
-                hotkey_hint,
-                paused=paused,
-            )
-        )
+    def set_overlay(index, step, part_name, paused=False):
+        overlay.set_text(format_overlay_text(job_id, index, total_parts, step, part_name, hotkey_hint, paused=paused))
 
     try:
         tz = TecZoneSession(logger, screenshotter)
         try:
-            set_overlay("CONNECT_TECZONE", "DRY_RUN" if settings.get("dryRun") else (step_labels[0] if step_labels else "DONE"))
+            set_overlay(0, "CONNECT_TECZONE", "-")
             tz.connect()
         except NeedsHelpError as e:
             overall_status = "NEEDS_HELP"
@@ -274,28 +229,26 @@ def process_job(job_path, hotkey_pause="ctrl+alt+p", disable_hotkeys=False, disa
             needs_help_path = str(Path(project_root) / "WORK" / "logs" / f"{job_id}_NEEDS_HELP.txt")
             write_needs_help(needs_help_path, "CONNECT_TECZONE", str(e))
             result["status"] = overall_status
-            logs_dir = Path(project_root) / "WORK" / "logs"
-            result_path = str(logs_dir / f"{job_id}.result.json")
+            result_path = str(log_dir / f"{job_id}.result.json")
             write_json(result_path, result)
-            write_json(str(logs_dir / "result.json"), result)
+            write_json(str(log_dir / "result.json"), result)
             if not disable_sounds and not settings.get("disableSounds", False):
                 play_job_end_sound(logger, overall_status)
             return result_path, overall_status
 
         if settings.get("dryRun"):
-            set_overlay("DRY_RUN", "DONE")
+            set_overlay(0, "DRY_RUN", "-")
             screenshotter.snap("dryrun_connected")
             logger.info("Dry run completed: connected to TecZone and parsed xometry json")
             result["status"] = "DONE"
-            result_path = str(Path(project_root) / "WORK" / "logs" / f"{job_id}.result.json")
+            result_path = str(log_dir / f"{job_id}.result.json")
             write_json(result_path, result)
-            write_json(str(Path(project_root) / "WORK" / "logs" / "result.json"), result)
+            write_json(str(log_dir / "result.json"), result)
             if not disable_sounds and not settings.get("disableSounds", False):
                 play_job_end_sound(logger, "DONE")
             return result_path, "DONE"
 
         pause_shot_taken = False
-
         for index, part in enumerate(input_files):
             part_index = index + 1
             part_id = part.get("partId")
@@ -305,10 +258,7 @@ def process_job(job_path, hotkey_pause="ctrl+alt+p", disable_hotkeys=False, disa
             if input_path and os.path.splitext(input_path)[1].lower() not in [".stp", ".step"]:
                 raise NeedsHelpError(f"Unsupported input extension: {input_path}")
 
-            material = None
-            if part_id in xometry_map:
-                material = xometry_map[part_id].get("material")
-
+            material = xometry_map.get(part_id, {}).get("material")
             part_result = {
                 "partId": part_id,
                 "inputPath": input_path,
@@ -322,10 +272,10 @@ def process_job(job_path, hotkey_pause="ctrl+alt+p", disable_hotkeys=False, disa
 
             step = ""
 
-            def wait_if_paused(current_label, next_label):
+            def wait_if_paused(current_step):
                 nonlocal pause_shot_taken
                 while pause_controller.is_paused():
-                    set_overlay(current_label, next_label, paused=True)
+                    set_overlay(part_index, current_step, part_name, paused=True)
                     if not pause_shot_taken:
                         screenshotter.snap("paused")
                         pause_shot_taken = True
@@ -334,29 +284,26 @@ def process_job(job_path, hotkey_pause="ctrl+alt+p", disable_hotkeys=False, disa
                     pause_shot_taken = False
 
             try:
-                step_idx = (part_index - 1) * len(STEP_ORDER)
-                step = f"OPEN_FILE {part_name}"
-                wait_if_paused(step, next_label_at(step_idx))
-                set_overlay(step, next_label_at(step_idx))
+                step = "OPEN_FILE"
+                wait_if_paused(step)
+                set_overlay(part_index, step, part_name)
                 screenshotter.snap("open_file_start")
                 tz.open_file(input_path)
                 screenshotter.snap("open_file_done")
-                done_steps += 1
 
-                step = f"SET_MATERIAL {part_name}"
-                wait_if_paused(step, next_label_at(step_idx + 1))
-                set_overlay(step, next_label_at(step_idx + 1))
+                step = "SET_MATERIAL"
+                wait_if_paused(step)
+                set_overlay(part_index, step, part_name)
                 screenshotter.snap("material_start")
                 used_material, note = tz.set_material(material)
                 part_result["materialUsedInTecZone"] = used_material
                 if note:
                     part_result["notes"] += note
                 screenshotter.snap("material_done")
-                done_steps += 1
 
-                step = f"EXPORT_GEO {part_name}"
-                wait_if_paused(step, next_label_at(step_idx + 2))
-                set_overlay(step, next_label_at(step_idx + 2))
+                step = "EXPORT_GEO"
+                wait_if_paused(step)
+                set_overlay(part_index, step, part_name)
                 screenshotter.snap("export_start")
                 export_name_template = settings.get("exportNameTemplate", "<partName>.geo")
                 export_name = export_name_template.replace("<partName>", part_name)
@@ -364,10 +311,7 @@ def process_job(job_path, hotkey_pause="ctrl+alt+p", disable_hotkeys=False, disa
                 tz.export_geo(export_path)
                 part_result["geoPath"] = export_path
                 screenshotter.snap("export_done")
-
-                thickness = tz.get_thickness_mm()
-                part_result["thicknessMmDetected"] = thickness
-                done_steps += 1
+                part_result["thicknessMmDetected"] = tz.get_thickness_mm()
 
             except NeedsHelpError as e:
                 part_result["status"] = "NEEDS_HELP"
@@ -375,7 +319,7 @@ def process_job(job_path, hotkey_pause="ctrl+alt+p", disable_hotkeys=False, disa
                 overall_status = "NEEDS_HELP"
                 screenshotter.snap("needs_help")
                 needs_help_path = str(Path(project_root) / "WORK" / "logs" / f"{job_id}_NEEDS_HELP.txt")
-                write_needs_help(needs_help_path, step, str(e))
+                write_needs_help(needs_help_path, f"{step} {part_name}", str(e))
                 result["parts"].append(part_result)
                 break
             except Exception as e:
@@ -387,33 +331,30 @@ def process_job(job_path, hotkey_pause="ctrl+alt+p", disable_hotkeys=False, disa
                     overall_status = "PARTIAL"
 
             result["parts"].append(part_result)
-
     finally:
         stop_event.set()
         pause_controller.stop()
         overlay.stop()
 
-    if overall_status == "DONE":
-        if any(p["status"] == "FAILED" for p in result["parts"]):
-            overall_status = "PARTIAL" if any(p["status"] == "DONE" for p in result["parts"]) else "FAILED"
+    if overall_status == "DONE" and any(p["status"] == "FAILED" for p in result["parts"]):
+        overall_status = "PARTIAL" if any(p["status"] == "DONE" for p in result["parts"]) else "FAILED"
 
     result["status"] = overall_status
-    logs_dir = Path(project_root) / "WORK" / "logs"
-    result_path = str(logs_dir / f"{job_id}.result.json")
+    result_path = str(log_dir / f"{job_id}.result.json")
     write_json(result_path, result)
-    write_json(str(logs_dir / "result.json"), result)
+    write_json(str(log_dir / "result.json"), result)
     if not disable_sounds and not settings.get("disableSounds", False):
         play_job_end_sound(logger, overall_status)
-
     return result_path, overall_status
 
 
-def run_loop(jobs_dir, hotkey_pause="ctrl+alt+p", disable_hotkeys=False, disable_sounds=False):
+def run_loop(jobs_dir, hotkey_pause="ctrl+alt+p", disable_hotkeys=False, disable_sounds=False, once=False):
     jobs_dir = Path(jobs_dir)
     state_dir = jobs_dir.parent / "state"
+    processed_any = False
 
     while True:
-        for job_path in jobs_dir.glob("*.json"):
+        for job_path in sorted(jobs_dir.glob("*.json")):
             try:
                 job = read_json(job_path)
                 job_id = job.get("jobId") or job_path.stem
@@ -424,6 +365,7 @@ def run_loop(jobs_dir, hotkey_pause="ctrl+alt+p", disable_hotkeys=False, disable
             if not ok:
                 continue
 
+            processed_any = True
             status = "FAILED"
             try:
                 _, status = process_job(
@@ -437,21 +379,32 @@ def run_loop(jobs_dir, hotkey_pause="ctrl+alt+p", disable_hotkeys=False, disable
             finally:
                 release_job(marker, status)
 
+            if once:
+                return processed_any
+
+        if once:
+            return processed_any
         time.sleep(DEFAULT_POLL_SECONDS)
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--jobs-dir", required=True, help="Path to WORK\\jobs")
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument("--jobs-dir", help="Path to WORK\\jobs")
+    input_group.add_argument("--project-root", help="Path to project root (uses <projectRoot>\\WORK\\jobs)")
+    parser.add_argument("--once", action="store_true", help="Process only one available job and exit")
     parser.add_argument("--hotkey-pause", default="ctrl+alt+p", help="Global pause hotkey")
     parser.add_argument("--disable-hotkeys", action="store_true", help="Disable global hotkeys")
     parser.add_argument("--disable-sounds", action="store_true", help="Disable start/end sounds")
     args = parser.parse_args()
+
+    jobs_dir = args.jobs_dir or str(Path(args.project_root) / "WORK" / "jobs")
     run_loop(
-        args.jobs_dir,
+        jobs_dir,
         hotkey_pause=args.hotkey_pause,
         disable_hotkeys=args.disable_hotkeys,
         disable_sounds=args.disable_sounds,
+        once=args.once,
     )
 
 
