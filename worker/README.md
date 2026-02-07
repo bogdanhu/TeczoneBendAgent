@@ -34,6 +34,16 @@ Disable overlay (useful if Tk crashes in your environment):
 python worker.py --jobs-dir X:\\33259_TEST_OC_20260206-210632\\WORK\\jobs --no-overlay
 ```
 
+Set explicit TecZone executable path for auto-start:
+```powershell
+python worker.py --jobs-dir X:\\33259_TEST_OC_20260206-210632\\WORK\\jobs --teczone-exe "C:\\Path\\Flux.exe"
+```
+
+Custom main window title regex:
+```powershell
+python worker.py --jobs-dir X:\\33259_TEST_OC_20260206-210632\\WORK\\jobs --teczone-title-re ".*Flux.*"
+```
+
 Run once from project root:
 ```powershell
 python worker.py --project-root X:\\33259_TEST_OC_20260206-210632 --once
@@ -93,6 +103,14 @@ python worker.py --project-root X:\\33259_TEST_OC_20260206-210632 --once
 - Persistent behavior specs are stored in `worker\WORKER_SPEC.md`.
 - Worker plays a short sound at job start and job end (can be disabled with `--disable-sounds` or job setting `disableSounds`).
 - Overlay format during run: `WORKER: <jobId> [i/n] <STEP> <partName>` and on pause `WORKER: <jobId> [paused] [i/n] ...`.
+- If you see `Tcl_AsyncDelete: async handler deleted by the wrong thread`, run with `--no-overlay` to disable Tk overlay:
+```powershell
+python worker.py --jobs-dir X:\\33259_TEST_OC_20260206-210632\\WORK\\jobs --no-overlay
+```
+- Auto-start behavior:
+- If `Flux.exe` is not running, worker tries to launch TecZone using `--teczone-exe`, then registry/program-files fallbacks.
+- If no executable is found, worker enters `NEEDS_HELP` with instruction to set `--teczone-exe`.
+- If TecZone is blocked by license/update dialogs, close those dialogs manually and rerun the job.
 
 ## How to rollback to last working tag
 Create `working` tags only after real Dorina validation (`OPEN_FILE` passes, at least one `.geo` exported, and `WORK\logs\<jobId>.result.json` exists).

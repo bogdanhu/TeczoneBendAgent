@@ -1,13 +1,17 @@
-﻿import os
+import os
+import re
+import subprocess
 import time
 from pathlib import Path
 
+from pywinauto import Desktop
 from pywinauto.application import Application
 
 from ui_utils import (
     describe_controls,
-    find_control,
     debug_open_dialog_search,
+    dump_window_titles,
+    find_control,
     find_unexpected_dialog,
     handle_possible_dialogs,
     open_dialog_present,
@@ -23,11 +27,13 @@ class NeedsHelpError(RuntimeError):
 
 
 class TecZoneSession:
-    def __init__(self, logger, screenshotter=None):
+    def __init__(self, logger, screenshotter=None, teczone_exe=None, teczone_title_re=None):
         self.logger = logger
         self.screenshotter = screenshotter
         self.app = None
         self.main = None
+        self.teczone_exe = teczone_exe
+        self.teczone_title_re = teczone_title_re
 
         self.main_title_re = os.getenv("TECZONE_MAIN_TITLE_RE", r".*TecZone.*Bend.*")
         self.material_menu_titles = ["Material", "Material..."]
@@ -39,23 +45,169 @@ class TecZoneSession:
             "File->Save As...",
         ]
 
-    def connect(self, timeout=20):
+    def _title_patterns(self):
+        patterns = []
+        if self.teczone_title_re:
+            patterns.append(self.teczone_title_re)
+        if self.main_title_re:
+            patterns.append(self.main_title_re)
+        patterns.extend([r".*Flux.*", r".*TecZone.*"])
+
+        valid = []
+        seen = set()
+        for p in patterns:
+            if p in seen:
+                continue
+            seen.add(p)
+            try:
+                re.compile(p)
+                valid.append(p)
+            except re.error as e:
+                self.logger.warning("Ignoring invalid title regex '%s': %s", p, e)
+        return valid
+
+    def _find_main_window(self, pattern):
+        for w in Desktop(backend="uia").windows():
+            try:
+                title = w.window_text() or ""
+            except Exception:
+                title = ""
+            if re.search(pattern, title, flags=re.IGNORECASE):
+                return w
+        return None
+
+    def _wait_for_main_window(self, timeout=60):
+        patterns = self._title_patterns()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            for pattern in patterns:
+                win = self._find_main_window(pattern)
+                if win:
+                    return win
+            time.sleep(0.4)
+        return None
+
+    def _is_flux_running(self):
         try:
-            main_spec = wait_for_window(self.main_title_re, timeout=timeout)
-            self.main = main_spec.wrapper_object()
+            proc = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq Flux.exe", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                check=False,
+            )
+            return "flux.exe" in (proc.stdout or "").lower()
+        except Exception as e:
+            self.logger.warning("Failed process check for Flux.exe: %s", e)
+            return False
+
+    def _registry_flux_path(self):
+        try:
+            import winreg
+        except Exception:
+            return None
+
+        keys = [
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\Flux.exe"),
+            (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\Flux.exe"),
+        ]
+        for root, key_path in keys:
+            try:
+                with winreg.OpenKey(root, key_path) as k:
+                    value, _ = winreg.QueryValueEx(k, None)
+                    if value and Path(value).exists():
+                        return value
+            except Exception:
+                continue
+        return None
+
+    def _program_files_flux_path(self):
+        bases = [os.getenv("ProgramFiles", r"C:\Program Files"), os.getenv("ProgramFiles(x86)", r"C:\Program Files (x86)")]
+
+        direct = []
+        for base in bases:
+            if not base:
+                continue
+            direct.extend(
+                [
+                    Path(base) / "TecZone Bend" / "Flux.exe",
+                    Path(base) / "TecZone" / "Flux.exe",
+                    Path(base) / "Flux" / "Flux.exe",
+                ]
+            )
+
+        for p in direct:
+            if p.exists():
+                return str(p)
+
+        for base in bases:
+            if not base or not Path(base).exists():
+                continue
+            try:
+                for root, _, files in os.walk(base):
+                    root_l = root.lower()
+                    if "teczone" not in root_l and "flux" not in root_l:
+                        continue
+                    for file_name in files:
+                        if file_name.lower() == "flux.exe":
+                            return str(Path(root) / file_name)
+            except Exception:
+                continue
+
+        return None
+
+    def _resolve_launch_path(self):
+        candidates = [
+            self.teczone_exe,
+            os.getenv("TECZONE_EXE"),
+            self._registry_flux_path(),
+            self._program_files_flux_path(),
+        ]
+        for c in candidates:
+            if c and Path(c).exists():
+                return str(Path(c))
+        return None
+
+    def connect(self, timeout=60):
+        flux_running = self._is_flux_running()
+        launch_path = None
+
+        if not flux_running:
+            launch_path = self._resolve_launch_path()
+            if not launch_path:
+                raise NeedsHelpError(
+                    "Flux.exe not running; could not resolve launch path. "
+                    "Provide --teczone-exe \"C:\\Path\\Flux.exe\"."
+                )
+            try:
+                self.logger.info("Flux.exe not running; launching TecZone at: %s", launch_path)
+                self.app = Application(backend="uia").start(f"\"{launch_path}\"")
+            except Exception as e:
+                raise NeedsHelpError(
+                    f"Flux.exe not running; attempted to launch at {launch_path}; failed because {e}"
+                )
+
+        win = self._wait_for_main_window(timeout=timeout)
+        if not win:
+            patterns = self._title_patterns()
+            candidates = dump_window_titles()[:30]
+            if flux_running:
+                raise NeedsHelpError(
+                    "Flux.exe running but main window not found; "
+                    f"title_patterns={patterns}; candidate windows: {candidates}"
+                )
+            raise NeedsHelpError(
+                "Flux.exe not running; attempted to launch at "
+                f"{launch_path}; main window not found within {timeout}s; "
+                f"title_patterns={patterns}; candidate windows: {candidates}"
+            )
+
+        try:
+            self.main = win.wrapper_object()
             self.logger.info("Connected to TecZone window: %s", self.main.window_text())
         except Exception as e:
-            exe = os.getenv("TECZONE_EXE")
-            if exe and os.path.exists(exe):
-                try:
-                    self.logger.info("TecZone window not found, launching: %s", exe)
-                    self.app = Application(backend="uia").start(exe)
-                    self.main = wait_for_window(self.main_title_re, timeout=timeout).wrapper_object()
-                    self.logger.info("Connected to TecZone window after launch: %s", self.main.window_text())
-                    return
-                except Exception as e2:
-                    raise NeedsHelpError(f"TecZone launch failed: {e2}")
-            raise NeedsHelpError(f"TecZone main window not found: {e}")
+            raise NeedsHelpError(f"TecZone main window wrapper failed: {e}")
 
     def open_file(self, path):
         if not Path(path).exists():

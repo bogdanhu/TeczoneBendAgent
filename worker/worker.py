@@ -28,7 +28,11 @@ class PauseController:
         try:
             from pynput import keyboard
         except Exception as e:
-            self.logger.warning("Hotkeys disabled (pynput unavailable): %s", e)
+            self.logger.warning(
+                "Hotkeys disabled because pynput is unavailable: %s. "
+                "Install dependencies with: pip install -r requirements.txt",
+                e,
+            )
             return
 
         def on_toggle():
@@ -156,7 +160,15 @@ def format_overlay_text(job_id, index, total, step, part_name, hotkey_hint, paus
     return f"WORKER: {job_id} {paused_txt}[{index}/{total}] {step} {part_name} | hint: {hotkey_hint}"
 
 
-def process_job(job_path, hotkey_pause="ctrl+alt+p", disable_hotkeys=False, disable_sounds=False, no_overlay=False):
+def process_job(
+    job_path,
+    hotkey_pause="ctrl+alt+p",
+    disable_hotkeys=False,
+    disable_sounds=False,
+    no_overlay=False,
+    teczone_exe=None,
+    teczone_title_re=None,
+):
     job = read_json(job_path)
     job_id = job["jobId"]
     project_root = job["projectRoot"]
@@ -226,7 +238,12 @@ def process_job(job_path, hotkey_pause="ctrl+alt+p", disable_hotkeys=False, disa
             overlay.set_text(format_overlay_text(job_id, index, total_parts, step, part_name, hotkey_hint, paused=paused))
 
     try:
-        tz = TecZoneSession(logger, screenshotter)
+        tz = TecZoneSession(
+            logger,
+            screenshotter,
+            teczone_exe=teczone_exe,
+            teczone_title_re=teczone_title_re,
+        )
         try:
             set_overlay(0, "CONNECT_TECZONE", "-")
             tz.connect()
@@ -356,7 +373,16 @@ def process_job(job_path, hotkey_pause="ctrl+alt+p", disable_hotkeys=False, disa
     return result_path, overall_status
 
 
-def run_loop(jobs_dir, hotkey_pause="ctrl+alt+p", disable_hotkeys=False, disable_sounds=False, once=False, no_overlay=False):
+def run_loop(
+    jobs_dir,
+    hotkey_pause="ctrl+alt+p",
+    disable_hotkeys=False,
+    disable_sounds=False,
+    once=False,
+    no_overlay=False,
+    teczone_exe=None,
+    teczone_title_re=None,
+):
     jobs_dir = Path(jobs_dir)
     state_dir = jobs_dir.parent / "state"
     processed_any = False
@@ -382,6 +408,8 @@ def run_loop(jobs_dir, hotkey_pause="ctrl+alt+p", disable_hotkeys=False, disable
                     disable_hotkeys=disable_hotkeys,
                     disable_sounds=disable_sounds,
                     no_overlay=no_overlay,
+                    teczone_exe=teczone_exe,
+                    teczone_title_re=teczone_title_re,
                 )
             except Exception:
                 status = "FAILED"
@@ -406,6 +434,8 @@ def main():
     parser.add_argument("--disable-hotkeys", action="store_true", help="Disable global hotkeys")
     parser.add_argument("--disable-sounds", action="store_true", help="Disable start/end sounds")
     parser.add_argument("--no-overlay", action="store_true", help="Disable Tk overlay")
+    parser.add_argument("--teczone-exe", help="Explicit path to Flux.exe for auto-start")
+    parser.add_argument("--teczone-title-re", help="Regex for TecZone main window title matching")
     args = parser.parse_args()
 
     jobs_dir = args.jobs_dir or str(Path(args.project_root) / "WORK" / "jobs")
@@ -416,6 +446,8 @@ def main():
         disable_sounds=args.disable_sounds,
         once=args.once,
         no_overlay=args.no_overlay,
+        teczone_exe=args.teczone_exe,
+        teczone_title_re=args.teczone_title_re,
     )
 
 
