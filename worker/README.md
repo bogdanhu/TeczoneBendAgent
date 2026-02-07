@@ -90,6 +90,8 @@ python worker.py --project-root X:\\33259_TEST_OC_20260206-210632 --once
 - Overlay format during run: `WORKER: <jobId> [i/n] <STEP> <partName>` and on pause `WORKER: <jobId> [paused] [i/n] ...`.
 
 ## How to rollback to last working tag
+Create `working` tags only after real Dorina validation (`OPEN_FILE` passes, at least one `.geo` exported, and `WORK\logs\<jobId>.result.json` exists).
+
 1. Fetch latest tags:
 ```powershell
 git fetch --tags

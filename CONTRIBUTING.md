@@ -36,18 +36,43 @@ If you add dependencies, update:
 ## 4. Push
 Run `git push` only after sanity checks pass.
 
-## 5. Checkpoint Tags (Rollback)
-When you reach a version that works on Dorina (for example: passes `OPEN_FILE` and exports at least one `.geo`), create a checkpoint tag:
+## 5. Working Checkpoint Tags (Rollback)
+Create annotated `working` tags only after a real Dorina test confirms all:
+- `OPEN_FILE` passes
+- at least one `.geo` is exported
+- `WORK\logs\<jobId>.result.json` is written
 
-```bash
-git tag -a v0.1.0 -m "working: open+export+pause"
-git push --tags
-```
+First stable milestone tag:
+- `v0.1.0`
 
-Versioning rules:
+Then version by impact:
 - `PATCH` (`0.1.X`): bugfixes
 - `MINOR` (`0.X.0`): backward-compatible features
 - `MAJOR` (`X.0.0`): breaking changes (job schema, output schema, CLI)
 
-## Compatibility Rule
-Do not change `job.json` schema unless explicitly requested.
+Commands to create and push a working tag:
+
+```bash
+git status
+git tag -a v0.1.0 -m "working: open+export+pause"
+git push --tags
+```
+
+List tags (newest first):
+
+```bash
+git fetch --tags
+git tag --sort=-creatordate
+```
+
+Quick rollback to a tag:
+
+```bash
+git fetch --tags
+git switch -c rollback/v0.1.0 v0.1.0
+```
+
+Important:
+- Do not create tags automatically after every commit.
+- Create tags only after real Dorina validation.
+- Do not change `job.json` schema unless explicitly requested.
