@@ -4,7 +4,16 @@ from pathlib import Path
 
 from pywinauto.application import Application
 
-from ui_utils import find_control, handle_possible_dialogs, wait_for_window
+from ui_utils import (
+    find_child,
+    find_control,
+    find_unexpected_dialog,
+    handle_possible_dialogs,
+    press_open,
+    set_file_name,
+    wait_for_open_dialog,
+    wait_for_window,
+)
 
 
 class NeedsHelpError(RuntimeError):
@@ -30,8 +39,8 @@ class TecZoneSession:
 
     def connect(self, timeout=20):
         try:
-            self.main = wait_for_window(self.main_title_re, timeout=timeout)
-            self.app = self.main.app
+            main_spec = wait_for_window(self.main_title_re, timeout=timeout)
+            self.main = main_spec.wrapper_object()
             self.logger.info("Connected to TecZone window: %s", self.main.window_text())
         except Exception as e:
             exe = os.getenv("TECZONE_EXE")
@@ -39,7 +48,7 @@ class TecZoneSession:
                 try:
                     self.logger.info("TecZone window not found, launching: %s", exe)
                     self.app = Application(backend="uia").start(exe)
-                    self.main = wait_for_window(self.main_title_re, timeout=timeout)
+                    self.main = wait_for_window(self.main_title_re, timeout=timeout).wrapper_object()
                     self.logger.info("Connected to TecZone window after launch: %s", self.main.window_text())
                     return
                 except Exception as e2:
@@ -49,25 +58,47 @@ class TecZoneSession:
     def open_file(self, path):
         if not Path(path).exists():
             raise NeedsHelpError(f"Input file not found: {path}")
+        if Path(path).suffix.lower() not in [".stp", ".step"]:
+            raise NeedsHelpError(f"Unsupported input extension: {path}")
 
         self.main.set_focus()
         self.main.type_keys("^o")
 
-        dialog = wait_for_window(r".*Open.*", timeout=10)
-        edit = find_control(dialog, title_re=r"File name.*", control_type="Edit")
-        if not edit:
-            edit = find_control(dialog, control_type="Edit")
-        if not edit:
-            raise NeedsHelpError("Open dialog file name edit not found")
+        try:
+            dialog = wait_for_open_dialog(timeout=5, parent=self.main)
+        except Exception as e:
+            # Some TecZone builds ignore Ctrl+O; retry via File->Open.
+            opened = False
+            for menu_path in ["File->Open", "File->Open..."]:
+                try:
+                    self.main.menu_select(menu_path)
+                    opened = True
+                    break
+                except Exception:
+                    continue
+            if not opened:
+                raise NeedsHelpError(f"Open dialog not found and menu fallback failed: {e}")
+            try:
+                dialog = wait_for_open_dialog(timeout=5, parent=self.main)
+            except Exception as e2:
+                raise NeedsHelpError(f"Open dialog not found: {e2}")
 
-        edit.set_edit_text(path)
-        open_btn = find_control(dialog, title_re=r"Open|O(p|P)en", control_type="Button")
-        if not open_btn:
-            raise NeedsHelpError("Open dialog Open button not found")
-        open_btn.click_input()
+        try:
+            set_file_name(dialog, path)
+            press_open(dialog)
+        except Exception as e:
+            raise NeedsHelpError(f"Open dialog interaction failed: {e}")
 
-        handle_possible_dialogs()
-        time.sleep(1.0)
+        deadline = time.time() + 90
+        while time.time() < deadline:
+            unexpected = find_unexpected_dialog()
+            if unexpected:
+                raise NeedsHelpError(f"Unexpected dialog while opening file: {unexpected}")
+            if not find_child(self.main, control_type="Window", title="Open"):
+                return
+            time.sleep(0.3)
+
+        raise NeedsHelpError("Open dialog did not close within 90 seconds")
 
     def set_material(self, material):
         if not material:

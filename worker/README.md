@@ -24,6 +24,11 @@ pip install -r requirements.txt
 python worker.py --jobs-dir X:\\33259_TEST_OC_20260206-210632\\WORK\\jobs
 ```
 
+Optional:
+```powershell
+python worker.py --jobs-dir X:\\33259_TEST_OC_20260206-210632\\WORK\\jobs --disable-sounds
+```
+
 ## Example job (realistic paths)
 ```json
 {
@@ -65,3 +70,5 @@ python worker.py --jobs-dir X:\\33259_TEST_OC_20260206-210632\\WORK\\jobs
 - `result.json` is written to `WORK\logs\<jobId>.result.json`.
 - Update UI selectors in `worker\teczone_actions.py` if your TecZone build uses different menu names.
 - Input files must be `.stp` or `.step` (case-insensitive) and are read from `job.json`.
+- Persistent behavior specs are stored in `worker\WORKER_SPEC.md`.
+- Worker plays a short sound at job start and job end (can be disabled with `--disable-sounds` or job setting `disableSounds`).
